@@ -24,13 +24,14 @@ import * as Hash from "effect/Hash"
 import { dual, pipe } from "effect/Function"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
+import * as Schema from "effect/Schema"
 import * as STM from "effect/STM"
 import * as TRef from "effect/TRef"
 import type { Mutable } from "effect/Types"
 import { CRDTTypeId, type GrowOnlySet, type GSetState, type ReplicaId } from "./CRDT.js"
 import { mergeSets } from "./internal/merge.js"
 import { getStateSync, isCRDT, makeEqualImpl, makeProtoBase } from "./internal/proto.js"
-import { CRDTPersistenceTag } from "./Persistence.js"
+import * as Persistence from "./Persistence.js"
 
 // =============================================================================
 // Errors
@@ -44,7 +45,7 @@ import { CRDTPersistenceTag } from "./Persistence.js"
  */
 export class GSetError extends Data.TaggedError("GSetError")<{
   readonly message: string
-}> { }
+}> {}
 
 // =============================================================================
 // Type Guards
@@ -171,30 +172,45 @@ export const Live = <A>(replicaId: ReplicaId) =>
  * Creates a layer with persistence support.
  *
  * State will be loaded on initialization and saved on finalization.
- * Requires CRDTPersistenceTag<SetState<A>> to be provided.
+ * Requires CRDTPersistence to be provided.
+ *
+ * @param elementSchema - Schema for the elements stored in the set
+ * @param replicaId - Unique identifier for this replica
  *
  * @example
  * ```ts
- * import { GSet, withPersistence, ReplicaId, layerMemoryPersistence } from "effect-crdts/GSet"
+ * import { GSet, withPersistence, ReplicaId } from "effect-crdts/GSet"
+ * import { layerMemory } from "effect-crdts/Persistence"
+ * import * as Schema from "effect/Schema"
  * import * as Effect from "effect/Effect"
  *
  * const program = Effect.gen(function* () {
  *   const set = yield* GSet<string>()
  *   // ... use set - state will be persisted
  * }).pipe(
- *   Effect.provide(withPersistence<string>(ReplicaId("replica-1"))),
- *   Effect.provide(layerMemoryPersistence<SetState<string>>())
+ *   Effect.provide(withPersistence(Schema.String, ReplicaId("replica-1"))),
+ *   Effect.provide(layerMemory)
  * )
  * ```
  *
  * @since 0.1.0
  * @category layers
  */
-export const withPersistence = <A>(replicaId: ReplicaId) =>
-  Layer.scoped(
+export const withPersistence = <A, I, R>(
+  elementSchema: Schema.Schema<A, I, R>,
+  replicaId: ReplicaId
+) => {
+  const stateSchema: Schema.Schema<GSetState<A>, GSetState<A>, R> = Schema.Struct({
+    type: Schema.Literal("GSet"),
+    replicaId: Schema.String as unknown as Schema.Schema<ReplicaId, ReplicaId, never>,
+    added: Schema.ReadonlySet(elementSchema)
+  }) as any
+
+  return Layer.scoped(
     GSet<A>(),
     Effect.gen(function* () {
-      const persistence = yield* CRDTPersistenceTag<GSetState<A>>()
+      const basePersistence = yield* Persistence.CRDTPersistence
+      const persistence = basePersistence.forSchema(stateSchema)
       const loadedState: Option.Option<GSetState<A>> = yield* persistence.load(replicaId)
 
       const initialState: GSetState<A> = pipe(
@@ -221,6 +237,7 @@ export const withPersistence = <A>(replicaId: ReplicaId) =>
       return set
     })
   )
+}
 
 // =============================================================================
 // Constructors

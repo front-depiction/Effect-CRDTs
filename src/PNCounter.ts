@@ -26,13 +26,14 @@ import { dual, pipe } from "effect/Function"
 import * as Layer from "effect/Layer"
 import * as Number from "effect/Number"
 import * as Option from "effect/Option"
+import * as Schema from "effect/Schema"
 import * as STM from "effect/STM"
 import * as TRef from "effect/TRef"
 import type { Mutable } from "effect/Types"
 import { CRDTTypeId, type Counter, type CounterState, type ReplicaId } from "./CRDT.js"
 import { mergeMaps } from "./internal/merge.js"
 import { getStateSync, isCRDT, makeEqualImpl, makeProtoBase } from "./internal/proto.js"
-import { CRDTPersistenceTag } from "./Persistence.js"
+import * as Persistence from "./Persistence.js"
 
 // =============================================================================
 // Errors
@@ -47,6 +48,22 @@ import { CRDTPersistenceTag } from "./Persistence.js"
 export class PNCounterError extends Data.TaggedError("PNCounterError")<{
   readonly message: string
 }> {}
+
+// =============================================================================
+// Schema
+// =============================================================================
+
+/**
+ * Schema for CounterState used in persistence.
+ *
+ * @internal
+ */
+const CounterStateSchema: Schema.Schema<CounterState, CounterState, never> = Schema.Struct({
+  type: Schema.Literal("GCounter", "PNCounter"),
+  replicaId: Schema.String as unknown as Schema.Schema<ReplicaId, ReplicaId, never>,
+  counts: Schema.ReadonlyMap({ key: Schema.String as unknown as Schema.Schema<ReplicaId, ReplicaId, never>, value: Schema.Number }),
+  decrements: Schema.optional(Schema.ReadonlyMap({ key: Schema.String as unknown as Schema.Schema<ReplicaId, ReplicaId, never>, value: Schema.Number }))
+}) as any
 
 // =============================================================================
 // Type Guards
@@ -150,7 +167,7 @@ export class PNCounter extends Context.Tag("PNCounter")<PNCounter, Counter>() {
    * Creates a layer with persistence support.
    *
    * State will be loaded on initialization and can be saved.
-   * Requires CRDTPersistenceTag<CounterState> to be provided.
+   * Requires CRDTPersistence to be provided.
    *
    * @since 0.1.0
    */
@@ -158,7 +175,8 @@ export class PNCounter extends Context.Tag("PNCounter")<PNCounter, Counter>() {
     Layer.scoped(
       this,
       Effect.gen(function* () {
-        const persistence = yield* CRDTPersistenceTag<CounterState>()
+        const basePersistence = yield* Persistence.CRDTPersistence
+        const persistence = basePersistence.forSchema(CounterStateSchema)
         const loadedState: Option.Option<CounterState> = yield* persistence.load(replicaId)
 
         const initialState: CounterState = pipe(

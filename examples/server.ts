@@ -50,8 +50,9 @@ const router = HttpRouter.empty.pipe(
       const params = yield* HttpRouter.params
       const replicaId = ReplicaId(params.replicaId)
 
-      const persistence = yield* Persistence.makeSchemaBasedPersistence(CounterStateSchema)
-      const state = yield* persistence.load(replicaId)
+      const store = yield* KeyValueStore.KeyValueStore
+      const schemaStore = store.forSchema(CounterStateSchema)
+      const state = yield* schemaStore.get(replicaId)
 
       return HttpServerResponse.json({
         replicaId,
@@ -70,8 +71,9 @@ const router = HttpRouter.empty.pipe(
       const replicaId = ReplicaId(params.replicaId)
       const state = body as CounterState
 
-      const persistence = yield* Persistence.makeSchemaBasedPersistence(CounterStateSchema)
-      yield* persistence.save(replicaId, state)
+      const store = yield* KeyValueStore.KeyValueStore
+      const schemaStore = store.forSchema(CounterStateSchema)
+      yield* schemaStore.set(replicaId, state)
 
       yield* Console.log(`📥 Received state from ${replicaId}`)
 
@@ -89,8 +91,9 @@ const router = HttpRouter.empty.pipe(
 
       yield* Console.log(`🔄 Sync request from ${replicaId}`)
 
-      const persistence = yield* Persistence.makeSchemaBasedPersistence(CounterStateSchema)
-      yield* persistence.save(ReplicaId(replicaId), state)
+      const store = yield* KeyValueStore.KeyValueStore
+      const schemaStore = store.forSchema(CounterStateSchema)
+      yield* schemaStore.set(ReplicaId(replicaId), state)
 
       // TODO: Get all other replica states and return them for merging
       // For now, just acknowledge
@@ -103,15 +106,30 @@ const router = HttpRouter.empty.pipe(
   )
 )
 
-// Server setup
-const ServerLive = HttpServer.serve(router).pipe(
-  Layer.provide(BunHttpServer.layer({ port: 3000 }))
+// Set up the application with logging
+const app = router.pipe(
+  HttpServer.serve(),
+  HttpServer.withLogAddress
 )
 
-// Main program
+// Build the dependency layers in the correct order
+// FileSystem layers are needed by KeyValueStore
+const fileSystemLayers = Layer.mergeAll(BunFileSystem.layer, BunPath.layer)
+
+const keyValueStoreLayer = KeyValueStore.layerFileSystem("./data/server").pipe(
+  Layer.provide(fileSystemLayers)
+)
+
+// Combine all dependency layers
+const dependencies = Layer.mergeAll(
+  BunHttpServer.layer({ port: 3000 }),
+  keyValueStoreLayer,
+  fileSystemLayers
+)
+
+// Main program with startup messages
 const program = Effect.gen(function* () {
   yield* Console.log("🚀 CRDT Sync Server starting...")
-  yield* Console.log("📡 Listening on http://localhost:3000")
   yield* Console.log("")
   yield* Console.log("Available endpoints:")
   yield* Console.log("  GET  /health")
@@ -121,13 +139,11 @@ const program = Effect.gen(function* () {
   yield* Console.log("")
   yield* Console.log("💾 Persistence: ./data/server/")
   yield* Console.log("")
+}).pipe(Effect.provide(dependencies))
 
-  yield* Effect.never
-}).pipe(
-  Effect.provide(ServerLive),
-  Effect.provide(KeyValueStore.layerFileSystem("./data/server")),
-  Effect.provide(BunFileSystem.layer),
-  Effect.provide(BunPath.layer)
+// Launch the server
+BunRuntime.runMain(
+  program.pipe(
+    Effect.andThen(Layer.launch(Layer.provide(app, dependencies)))
+  )
 )
-
-BunRuntime.runMain(program)

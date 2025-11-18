@@ -21,7 +21,7 @@ import * as BunPath from "@effect/platform-bun/BunPath"
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import * as PNCounter from "../src/PNCounter.js"
 import * as Persistence from "../src/Persistence.js"
-import { ReplicaId, type CounterState } from "../src/CRDT.js"
+import * as CRDT from "../src/CRDT"
 
 // Schema for CounterState
 const CounterStateSchema = Schema.Struct({
@@ -47,7 +47,7 @@ const getConfig = () => {
 }
 
 // Simulate activity
-const simulateActivity = (counter: PNCounter.Counter, replicaName: string) =>
+const simulateActivity = (counter: CRDT.Counter, replicaName: string) =>
   Effect.gen(function* () {
     const value = yield* Random.nextIntBetween(1, 10)
     const isIncrement = yield* Random.nextBoolean
@@ -104,7 +104,7 @@ const program = Effect.gen(function* () {
 const { replicaName, dataDir } = getConfig()
 
 const runnable = program.pipe(
-  Effect.provide(PNCounter.PNCounter.withPersistence(ReplicaId(replicaName))),
+  Effect.provide(PNCounter.PNCounter.withPersistence(CRDT.ReplicaId(replicaName))),
   Effect.provide(Persistence.withSchemaLayer(CounterStateSchema)),
   Effect.provide(KeyValueStore.layerFileSystem(dataDir)),
   Effect.provide(BunFileSystem.layer),
