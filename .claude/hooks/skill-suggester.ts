@@ -12,8 +12,8 @@
 import { Effect, Console, pipe, Array, Record, Option, String } from "effect"
 import { Terminal, FileSystem, Path } from "@effect/platform"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
-import { Schema } from "@effect/schema"
 import { UserPromptInput } from "./schemas"
+import * as Schema from "effect/Schema"
 
 
 /**

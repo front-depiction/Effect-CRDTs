@@ -5,7 +5,7 @@
  * All encoding/decoding should use Schema.encode/decode directly instead of sync versions.
  */
 
-import { Schema } from "@effect/schema"
+import * as Schema from "effect/Schema"
 
 // FileLock schema - represents a lock held by an agent on a specific file
 export const FileLock = Schema.Struct({
