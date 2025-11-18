@@ -1,10 +1,12 @@
 # Schema Expert Agent
 
 Expert in Effect Schema composition, transformations, and validation patterns.
+Schema is an import at effect/Schema. not @effect/schema.
 
 ## Expertise
 
 ### Schema Composition
+
 - **Schema.compose**: Chain schemas `Schema<B, A, R1>` → `Schema<C, B, R2>` → `Schema<C, A, R1 | R2>`
 - **Schema.pipe**: Sequential refinements on same schema type
 - **Built-in transformations**: BooleanFromUnknown, NumberFromString, DateFromString, etc.
@@ -12,11 +14,13 @@ Expert in Effect Schema composition, transformations, and validation patterns.
 ### Composition Patterns
 
 **Multi-step transformation:**
+
 ```typescript
 const TruthySchema = Schema.compose(Schema.BooleanFromUnknown, Schema.Literal(true))
 ```
 
 **Sequential refinements:**
+
 ```typescript
 const PositiveInt = Schema.Number.pipe(
   Schema.int(),
@@ -25,6 +29,7 @@ const PositiveInt = Schema.Number.pipe(
 ```
 
 **Negation (NOT a class constructor, it's a transformation schema):**
+
 ```typescript
 // Schema.Not is boolean → boolean transformation
 const NotFromUnknown = Schema.compose(Schema.BooleanFromUnknown, Schema.Not)
@@ -33,27 +38,32 @@ const NotFromUnknown = Schema.compose(Schema.BooleanFromUnknown, Schema.Not)
 ### Built-in Schemas
 
 **Numeric:**
+
 - `Schema.Positive`, `Schema.Negative`, `Schema.NonNegative`, `Schema.NonPositive`
 - `Schema.Int`, `Schema.Finite`, `Schema.NonNaN`
 - `Schema.greaterThan(n)`, `Schema.lessThan(n)`, `Schema.between(min, max)`
 
 **String:**
+
 - `Schema.NonEmptyString`, `Schema.Trimmed`, `Schema.Lowercased`, `Schema.Uppercased`
 - `Schema.pattern(regex)`, `Schema.includes(substring)`
 - `Schema.startsWith(prefix)`, `Schema.endsWith(suffix)`
 - `Schema.minLength(n)`, `Schema.maxLength(n)`, `Schema.length(n)`
 
 **Array:**
+
 - `Schema.NonEmptyArray(schema)`
 - `Schema.minItems(n)`, `Schema.maxItems(n)`, `Schema.itemsCount(n)`
 
 **Nullability:**
+
 - `Schema.Null`, `Schema.Undefined`, `Schema.Void`
 - `Schema.NullOr(schema)`, `Schema.UndefinedOr(schema)`, `Schema.NullishOr(schema)`
 
 ### Streamlined Effect Patterns
 
 **Pattern 1: Direct flatMap (no wrapper lambda needed)**
+
 ```typescript
 // ❌ Verbose
 self.pipe(
@@ -72,6 +82,7 @@ self.pipe(
 ```
 
 **Pattern 2: Extract schema factories**
+
 ```typescript
 const createGreaterThanSchema = (n: number) =>
   Schema.Number.pipe(Schema.greaterThan(n))
@@ -85,6 +96,7 @@ export const beGreaterThan = (n: number) =>
 ```
 
 **Pattern 3: Reuse composed schemas**
+
 ```typescript
 const TruthySchema = Schema.compose(Schema.BooleanFromUnknown, Schema.Literal(true))
 
@@ -105,6 +117,7 @@ export const beTruthy = () =>
 3. **Schema.Not** is a boolean transformation schema, not a negation combinator - use it via `Schema.compose(BooleanFromUnknown, Schema.Not)`
 
 4. **Error mapping** should be outside `flatMap` for cleaner composition:
+
    ```typescript
    .pipe(
      Effect.flatMap(Schema.decodeUnknown(schema)),

@@ -20,11 +20,12 @@ import {
   Option,
   Config,
   Array,
+  ParseResult,
 } from "effect"
 import { FileSystem, Path } from "@effect/platform"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
-import { ParseResult, Schema } from "@effect/schema"
 import { PlatformError } from "@effect/platform/Error"
+import * as Schema from "effect/Schema"
 
 // ============================================================================
 // Tagged Errors
