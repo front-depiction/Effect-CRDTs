@@ -16,24 +16,41 @@
  * @since 0.1.0
  */
 
-import * as Array from "effect/Array"
 import * as Context from "effect/Context"
 import * as Data from "effect/Data"
 import * as Effect from "effect/Effect"
-import * as Equal from "effect/Equal"
-import * as Hash from "effect/Hash"
 import { dual, pipe } from "effect/Function"
 import * as Layer from "effect/Layer"
 import * as Number from "effect/Number"
 import * as Option from "effect/Option"
-import * as Schema from "effect/Schema"
 import * as STM from "effect/STM"
 import * as TRef from "effect/TRef"
 import type { Mutable } from "effect/Types"
-import { CRDTTypeId, type Counter, type CounterState, type ReplicaId } from "./CRDT.js"
+import { CRDTTypeId, type ReplicaId } from "./CRDT.js"
+import * as Counter from "./CRDTCounter.js"
 import { mergeMaps } from "./internal/merge.js"
-import { getStateSync, isCRDT, makeEqualImpl, makeProtoBase } from "./internal/proto.js"
+import { isCRDT, makeProtoBase } from "./internal/proto.js"
 import * as Persistence from "./Persistence.js"
+
+// =============================================================================
+// Symbols
+// =============================================================================
+
+/**
+ * G-Counter type identifier.
+ *
+ * @since 0.1.0
+ * @category symbols
+ */
+export const GCounterTypeId: unique symbol = Symbol.for("effect-crdts/GCounter")
+
+/**
+ * G-Counter type identifier type.
+ *
+ * @since 0.1.0
+ * @category symbols
+ */
+export type GCounterTypeId = typeof GCounterTypeId
 
 // =============================================================================
 // Errors
@@ -47,34 +64,20 @@ import * as Persistence from "./Persistence.js"
  */
 export class GCounterError extends Data.TaggedError("GCounterError")<{
   readonly message: string
-}> {}
-
-// =============================================================================
-// Schema
-// =============================================================================
-
-/**
- * Schema for CounterState used in persistence.
- *
- * @internal
- */
-const CounterStateSchema: Schema.Schema<CounterState, CounterState, never> = Schema.Struct({
-  type: Schema.Literal("GCounter", "PNCounter"),
-  replicaId: Schema.String as unknown as Schema.Schema<ReplicaId, ReplicaId, never>,
-  counts: Schema.ReadonlyMap({ key: Schema.String as unknown as Schema.Schema<ReplicaId, ReplicaId, never>, value: Schema.Number }),
-  decrements: Schema.optional(Schema.ReadonlyMap({ key: Schema.String as unknown as Schema.Schema<ReplicaId, ReplicaId, never>, value: Schema.Number }))
-}) as any
+}> { }
 
 // =============================================================================
 // Type Guards
 // =============================================================================
 
 /**
- * Type guard to check if a value is a Counter.
+ * Type guard to check if a value is a GCounter.
  *
- * @internal
+ * @since 0.1.0
+ * @category guards
  */
-const isCounter = (u: unknown): u is Counter => isCRDT(u)
+export const isGCounter = (u: unknown): u is Counter.Counter =>
+  isCRDT(u) && GCounterTypeId in u
 
 // =============================================================================
 // Proto Objects
@@ -82,26 +85,9 @@ const isCounter = (u: unknown): u is Counter => isCRDT(u)
 
 /** @internal */
 const ProtoGCounter = {
-  ...makeProtoBase<CounterState>(CRDTTypeId),
-  [Equal.symbol]: makeEqualImpl<Counter>(isCounter),
-  [Hash.symbol](this: Counter): number {
-    const state: CounterState = getStateSync(this.stateRef)
-    return pipe(
-      Array.fromIterable(state.counts.entries()),
-      Array.map(([replicaId, count]) => Hash.hash(replicaId) + Hash.number(count)),
-      Array.prepend(Hash.hash(state.replicaId)),
-      Array.prepend(Hash.string("GCounter")),
-      (hashes) => Array.reduce(hashes, 0, (acc, h) => acc ^ h)
-    )
-  },
-  toJSON(this: Counter) {
-    const state: CounterState = getStateSync(this.stateRef)
-    return {
-      _id: "GCounter",
-      replicaId: state.replicaId,
-      value: this.value.pipe(STM.commit, Effect.runSync)
-    }
-  }
+  ...makeProtoBase<Counter.CounterState>(CRDTTypeId),
+  [Counter.CounterTypeId]: Counter.CounterTypeId,
+  [GCounterTypeId]: GCounterTypeId
 }
 
 // =============================================================================
@@ -135,7 +121,7 @@ const ProtoGCounter = {
  * @since 0.1.0
  * @category tags
  */
-export class GCounter extends Context.Tag("GCounter")<GCounter, Counter>() {
+export class GCounter extends Context.Tag("GCounter")<GCounter, Counter.Counter>() {
   /**
    * Creates a live layer with no persistence.
    *
@@ -147,13 +133,12 @@ export class GCounter extends Context.Tag("GCounter")<GCounter, Counter>() {
     Layer.effect(
       this,
       Effect.gen(function* () {
-        const stateRef = yield* STM.commit(
-          TRef.make<CounterState>({
-            type: "GCounter",
-            replicaId,
-            counts: new Map([[replicaId, 0]])
-          })
-        )
+        const stateRef = yield* TRef.make<Counter.CounterState>({
+          type: "GCounter",
+          replicaId,
+          counts: new Map([[replicaId, 0]]),
+          decrements: Option.none()
+        })
 
         return makeGCounter(replicaId, stateRef)
       })
@@ -172,25 +157,27 @@ export class GCounter extends Context.Tag("GCounter")<GCounter, Counter>() {
       this,
       Effect.gen(function* () {
         const basePersistence = yield* Persistence.CRDTPersistence
-        const persistence = basePersistence.forSchema(CounterStateSchema)
-        const loadedState: Option.Option<CounterState> = yield* persistence.load(replicaId)
+        const persistence = basePersistence.forSchema(Counter.CounterState)
+        const loadedState: Option.Option<Counter.CounterState> = yield* persistence.load(replicaId)
 
-        const initialState: CounterState = pipe(
+        const initialState: Counter.CounterState = pipe(
           loadedState,
           Option.getOrElse(() => ({
             type: "GCounter" as const,
             replicaId,
-            counts: new Map([[replicaId, 0]])
+            counts: new Map([[replicaId, 0]]),
+            decrements: Option.none()
           }))
         )
 
-        const stateRef = yield* STM.commit(TRef.make(initialState))
+        const stateRef = yield* TRef.make(initialState)
         const counter = makeGCounter(replicaId, stateRef)
 
         // Setup auto-save on finalization
         yield* Effect.addFinalizer(() =>
           pipe(
-            STM.commit(TRef.get(stateRef)),
+            TRef.get(stateRef),
+            STM.commit,
             Effect.flatMap((state) => persistence.save(replicaId, state)),
             Effect.ignoreLogged
           )
@@ -206,8 +193,8 @@ export class GCounter extends Context.Tag("GCounter")<GCounter, Counter>() {
  *
  * @internal
  */
-const makeGCounter = (replicaId: ReplicaId, stateRef: TRef.TRef<CounterState>): Counter => {
-  const counter: Mutable<Counter> = Object.create(ProtoGCounter)
+const makeGCounter = (replicaId: ReplicaId, stateRef: TRef.TRef<Counter.CounterState>): Counter.Counter => {
+  const counter: Mutable<Counter.Counter> = Object.create(ProtoGCounter)
   counter.stateRef = stateRef
   counter.replicaId = replicaId
 
@@ -277,15 +264,14 @@ const makeGCounter = (replicaId: ReplicaId, stateRef: TRef.TRef<CounterState>): 
  * @since 0.1.0
  * @category constructors
  */
-export const make = (replicaId: ReplicaId): Effect.Effect<Counter> =>
+export const make = (replicaId: ReplicaId): Effect.Effect<Counter.Counter> =>
   Effect.gen(function* () {
-    const stateRef = yield* STM.commit(
-      TRef.make<CounterState>({
-        type: "GCounter",
-        replicaId,
-        counts: new Map([[replicaId, 0]])
-      })
-    )
+    const stateRef = yield* TRef.make<Counter.CounterState>({
+      type: "GCounter",
+      replicaId,
+      counts: new Map([[replicaId, 0]]),
+      decrements: Option.none()
+    })
     return makeGCounter(replicaId, stateRef)
   })
 
@@ -312,11 +298,11 @@ export const make = (replicaId: ReplicaId): Effect.Effect<Counter> =>
  * @category operations
  */
 export const increment: {
-  (value?: number): (counter: Counter) => STM.STM<void>
-  (counter: Counter, value?: number): STM.STM<void>
+  (value?: number): (counter: Counter.Counter) => STM.STM<void>
+  (counter: Counter.Counter, value?: number): STM.STM<void>
 } = dual(
-  (args) => isCounter(args[0]),
-  (counter: Counter, value?: number): STM.STM<void> => counter.increment(value)
+  (args) => isGCounter(args[0]),
+  (counter: Counter.Counter, value?: number): STM.STM<void> => counter.increment(value)
 )
 
 /**
@@ -338,7 +324,7 @@ export const increment: {
  * @since 0.1.0
  * @category getters
  */
-export const value = (counter: Counter): STM.STM<number> => counter.value
+export const value = (counter: Counter.Counter): STM.STM<number> => counter.value
 
 /**
  * Merge another counter's state into this counter.
@@ -368,9 +354,9 @@ export const value = (counter: Counter): STM.STM<number> => counter.value
  * @category operations
  */
 export const merge: {
-  (other: CounterState): (counter: Counter) => STM.STM<void>
-  (counter: Counter, other: CounterState): STM.STM<void>
-} = dual(2, (counter: Counter, other: CounterState): STM.STM<void> => counter.merge(other))
+  (other: Counter.CounterState): (counter: Counter.Counter) => STM.STM<void>
+  (counter: Counter.Counter, other: Counter.CounterState): STM.STM<void>
+} = dual(2, (counter: Counter.Counter, other: Counter.CounterState): STM.STM<void> => counter.merge(other))
 
 /**
  * Get the current state of a counter.
@@ -378,4 +364,4 @@ export const merge: {
  * @since 0.1.0
  * @category getters
  */
-export const query = (counter: Counter): STM.STM<CounterState> => counter.query
+export const query = (counter: Counter.Counter): STM.STM<Counter.CounterState> => counter.query

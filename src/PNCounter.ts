@@ -20,20 +20,38 @@ import * as Array from "effect/Array"
 import * as Context from "effect/Context"
 import * as Data from "effect/Data"
 import * as Effect from "effect/Effect"
-import * as Equal from "effect/Equal"
-import * as Hash from "effect/Hash"
 import { dual, pipe } from "effect/Function"
 import * as Layer from "effect/Layer"
 import * as Number from "effect/Number"
 import * as Option from "effect/Option"
-import * as Schema from "effect/Schema"
 import * as STM from "effect/STM"
 import * as TRef from "effect/TRef"
 import type { Mutable } from "effect/Types"
-import { CRDTTypeId, type Counter, type CounterState, type ReplicaId } from "./CRDT.js"
+import { CRDTTypeId, type ReplicaId } from "./CRDT.js"
+import * as Counter from "./CRDTCounter.js"
 import { mergeMaps } from "./internal/merge.js"
-import { getStateSync, isCRDT, makeEqualImpl, makeProtoBase } from "./internal/proto.js"
+import { isCRDT, makeProtoBase } from "./internal/proto.js"
 import * as Persistence from "./Persistence.js"
+
+// =============================================================================
+// Symbols
+// =============================================================================
+
+/**
+ * PN-Counter type identifier.
+ *
+ * @since 0.1.0
+ * @category symbols
+ */
+export const PNCounterTypeId: unique symbol = Symbol.for("effect-crdts/PNCounter")
+
+/**
+ * PN-Counter type identifier type.
+ *
+ * @since 0.1.0
+ * @category symbols
+ */
+export type PNCounterTypeId = typeof PNCounterTypeId
 
 // =============================================================================
 // Errors
@@ -47,34 +65,20 @@ import * as Persistence from "./Persistence.js"
  */
 export class PNCounterError extends Data.TaggedError("PNCounterError")<{
   readonly message: string
-}> {}
-
-// =============================================================================
-// Schema
-// =============================================================================
-
-/**
- * Schema for CounterState used in persistence.
- *
- * @internal
- */
-const CounterStateSchema: Schema.Schema<CounterState, CounterState, never> = Schema.Struct({
-  type: Schema.Literal("GCounter", "PNCounter"),
-  replicaId: Schema.String as unknown as Schema.Schema<ReplicaId, ReplicaId, never>,
-  counts: Schema.ReadonlyMap({ key: Schema.String as unknown as Schema.Schema<ReplicaId, ReplicaId, never>, value: Schema.Number }),
-  decrements: Schema.optional(Schema.ReadonlyMap({ key: Schema.String as unknown as Schema.Schema<ReplicaId, ReplicaId, never>, value: Schema.Number }))
-}) as any
+}> { }
 
 // =============================================================================
 // Type Guards
 // =============================================================================
 
 /**
- * Type guard to check if a value is a Counter.
+ * Type guard to check if a value is a PNCounter.
  *
- * @internal
+ * @since 0.1.0
+ * @category guards
  */
-const isCounter = (u: unknown): u is Counter => isCRDT(u)
+export const isPNCounter = (u: unknown): u is Counter.Counter =>
+  isCRDT(u) && PNCounterTypeId in u
 
 // =============================================================================
 // Proto Objects
@@ -82,29 +86,9 @@ const isCounter = (u: unknown): u is Counter => isCRDT(u)
 
 /** @internal */
 const ProtoPNCounter = {
-  ...makeProtoBase<CounterState>(CRDTTypeId),
-  [Equal.symbol]: makeEqualImpl<Counter>(isCounter),
-  [Hash.symbol](this: Counter): number {
-    const state: CounterState = getStateSync(this.stateRef)
-    return pipe(
-      Array.appendAll(
-        Array.fromIterable(state.counts.entries()),
-        Array.fromIterable((state.decrements ?? new Map()).entries())
-      ),
-      Array.map(([replicaId, value]) => Hash.hash(replicaId) + Hash.number(value)),
-      Array.prepend(Hash.hash(state.replicaId)),
-      Array.prepend(Hash.string("PNCounter")),
-      (hashes) => Array.reduce(hashes, 0, (acc, h) => acc ^ h)
-    )
-  },
-  toJSON(this: Counter) {
-    const state: CounterState = getStateSync(this.stateRef)
-    return {
-      _id: "PNCounter",
-      replicaId: state.replicaId,
-      value: this.value.pipe(STM.commit, Effect.runSync)
-    }
-  }
+  ...makeProtoBase<Counter.CounterState>(CRDTTypeId),
+  [Counter.CounterTypeId]: Counter.CounterTypeId,
+  [PNCounterTypeId]: PNCounterTypeId
 }
 
 // =============================================================================
@@ -138,7 +122,7 @@ const ProtoPNCounter = {
  * @since 0.1.0
  * @category tags
  */
-export class PNCounter extends Context.Tag("PNCounter")<PNCounter, Counter>() {
+export class PNCounter extends Context.Tag("PNCounter")<PNCounter, Counter.Counter>() {
   /**
    * Creates a live layer with no persistence.
    *
@@ -150,14 +134,12 @@ export class PNCounter extends Context.Tag("PNCounter")<PNCounter, Counter>() {
     Layer.effect(
       this,
       Effect.gen(function* () {
-        const stateRef = yield* STM.commit(
-          TRef.make<CounterState>({
-            type: "PNCounter",
-            replicaId,
-            counts: new Map([[replicaId, 0]]),
-            decrements: new Map([[replicaId, 0]])
-          })
-        )
+        const stateRef = yield* TRef.make<Counter.CounterState>({
+          type: "PNCounter",
+          replicaId,
+          counts: new Map([[replicaId, 0]]),
+          decrements: Option.some(new Map([[replicaId, 0]]))
+        })
 
         return makePNCounter(replicaId, stateRef)
       })
@@ -176,26 +158,28 @@ export class PNCounter extends Context.Tag("PNCounter")<PNCounter, Counter>() {
       this,
       Effect.gen(function* () {
         const basePersistence = yield* Persistence.CRDTPersistence
-        const persistence = basePersistence.forSchema(CounterStateSchema)
-        const loadedState: Option.Option<CounterState> = yield* persistence.load(replicaId)
+        const persistence = basePersistence.forSchema(Counter.CounterState)
+        const loadedState: Option.Option<Counter.CounterState> = yield* persistence.load(replicaId)
 
-        const initialState: CounterState = pipe(
+        const initialState: Counter.CounterState = pipe(
           loadedState,
           Option.getOrElse(() => ({
             type: "PNCounter" as const,
             replicaId,
             counts: new Map([[replicaId, 0]]),
-            decrements: new Map([[replicaId, 0]])
+            decrements: Option.some(new Map([[replicaId, 0]]))
+
           }))
         )
 
-        const stateRef = yield* STM.commit(TRef.make(initialState))
+        const stateRef = yield* TRef.make(initialState)
         const counter = makePNCounter(replicaId, stateRef)
 
         // Setup auto-save on finalization
         yield* Effect.addFinalizer(() =>
           pipe(
-            STM.commit(TRef.get(stateRef)),
+            TRef.get(stateRef),
+            STM.commit,
             Effect.flatMap((state) => persistence.save(replicaId, state)),
             Effect.ignoreLogged
           )
@@ -211,8 +195,8 @@ export class PNCounter extends Context.Tag("PNCounter")<PNCounter, Counter>() {
  *
  * @internal
  */
-const makePNCounter = (replicaId: ReplicaId, stateRef: TRef.TRef<CounterState>): Counter => {
-  const counter: Mutable<Counter> = Object.create(ProtoPNCounter)
+const makePNCounter = (replicaId: ReplicaId, stateRef: TRef.TRef<Counter.CounterState>): Counter.Counter => {
+  const counter: Mutable<Counter.Counter> = Object.create(ProtoPNCounter)
   counter.stateRef = stateRef
   counter.replicaId = replicaId
 
@@ -222,11 +206,11 @@ const makePNCounter = (replicaId: ReplicaId, stateRef: TRef.TRef<CounterState>):
     TRef.update(stateRef, (current) => ({
       ...current,
       counts: mergeMaps(current.counts, other.counts, Number.max),
-      decrements: mergeMaps(
-        current.decrements ?? new Map(),
-        other.decrements ?? new Map(),
+      decrements: Option.some(mergeMaps(
+        Option.getOrElse(current.decrements, () => new Map()),
+        Option.getOrElse(other.decrements, () => new Map()),
         Number.max
-      )
+      ))
     }))
 
   counter.delta = pipe(
@@ -238,11 +222,11 @@ const makePNCounter = (replicaId: ReplicaId, stateRef: TRef.TRef<CounterState>):
     TRef.update(stateRef, (current) => ({
       ...current,
       counts: mergeMaps(current.counts, delta.counts, Number.max),
-      decrements: mergeMaps(
-        current.decrements ?? new Map(),
-        delta.decrements ?? new Map(),
+      decrements: Option.some(mergeMaps(
+        Option.getOrElse(current.decrements, () => new Map()),
+        Option.getOrElse(delta.decrements, () => new Map()),
         Number.max
-      )
+      ))
     }))
 
   counter.increment = (value = 1) => {
@@ -265,24 +249,33 @@ const makePNCounter = (replicaId: ReplicaId, stateRef: TRef.TRef<CounterState>):
       return STM.die(new PNCounterError({ message: "Cannot decrement by negative value" }))
     }
     return TRef.update(stateRef, (state) => {
-      const currentDecrement = (state.decrements ?? new Map()).get(replicaId) ?? 0
-      const newDecrements = new Map(state.decrements ?? new Map())
+      const currentDecrements = pipe(
+        state.decrements,
+        Option.getOrElse(() => new Map() as ReadonlyMap<ReplicaId, number>)
+      )
+      const currentDecrement = currentDecrements.get(replicaId) ?? 0
+      const newDecrements = new Map(currentDecrements)
       newDecrements.set(replicaId, currentDecrement + value)
       return {
         ...state,
-        decrements: newDecrements
+        decrements: Option.some(newDecrements)
       }
     })
   }
 
   counter.value = pipe(
     TRef.get(stateRef),
-    STM.map((state) =>
-      Number.subtract(
-        Number.sumAll(state.counts.values()),
-        Number.sumAll(state.decrements?.values() ?? [])
+    STM.map((state) => {
+      const decrementValues = pipe(
+        state.decrements,
+        Option.map((m) => Array.fromIterable(m.values())),
+        Option.getOrElse(() => [] as readonly number[])
       )
-    )
+      return Number.subtract(
+        Number.sumAll(state.counts.values()),
+        Number.sumAll(decrementValues)
+      )
+    })
   )
 
   return counter
@@ -311,16 +304,14 @@ const makePNCounter = (replicaId: ReplicaId, stateRef: TRef.TRef<CounterState>):
  * @since 0.1.0
  * @category constructors
  */
-export const make = (replicaId: ReplicaId): Effect.Effect<Counter> =>
+export const make = (replicaId: ReplicaId): Effect.Effect<Counter.Counter> =>
   Effect.gen(function* () {
-    const stateRef = yield* STM.commit(
-      TRef.make<CounterState>({
-        type: "PNCounter",
-        replicaId,
-        counts: new Map([[replicaId, 0]]),
-        decrements: new Map([[replicaId, 0]])
-      })
-    )
+    const stateRef = yield* TRef.make<Counter.CounterState>({
+      type: "PNCounter",
+      replicaId,
+      counts: new Map([[replicaId, 0]]),
+      decrements: Option.some(new Map([[replicaId, 0]]))
+    })
     return makePNCounter(replicaId, stateRef)
   })
 
@@ -331,11 +322,11 @@ export const make = (replicaId: ReplicaId): Effect.Effect<Counter> =>
  * @category operations
  */
 export const increment: {
-  (value?: number): (counter: Counter) => STM.STM<void>
-  (counter: Counter, value?: number): STM.STM<void>
+  (value?: number): (counter: Counter.Counter) => STM.STM<void>
+  (counter: Counter.Counter, value?: number): STM.STM<void>
 } = dual(
-  (args) => isCounter(args[0]),
-  (counter: Counter, value?: number): STM.STM<void> => counter.increment(value)
+  (args) => isPNCounter(args[0]),
+  (counter: Counter.Counter, value?: number): STM.STM<void> => counter.increment(value)
 )
 
 /**
@@ -345,11 +336,11 @@ export const increment: {
  * @category operations
  */
 export const decrement: {
-  (value?: number): (counter: Counter) => STM.STM<void>
-  (counter: Counter, value?: number): STM.STM<void>
+  (value?: number): (counter: Counter.Counter) => STM.STM<void>
+  (counter: Counter.Counter, value?: number): STM.STM<void>
 } = dual(
-  (args) => isCounter(args[0]),
-  (counter: Counter, value?: number): STM.STM<void> => counter.decrement(value)
+  (args) => isPNCounter(args[0]),
+  (counter: Counter.Counter, value?: number): STM.STM<void> => counter.decrement(value)
 )
 
 /**
@@ -358,7 +349,7 @@ export const decrement: {
  * @since 0.1.0
  * @category getters
  */
-export const value = (counter: Counter): STM.STM<number> => counter.value
+export const value = (counter: Counter.Counter): STM.STM<number> => counter.value
 
 /**
  * Merge another counter's state into this counter.
@@ -367,9 +358,9 @@ export const value = (counter: Counter): STM.STM<number> => counter.value
  * @category operations
  */
 export const merge: {
-  (other: CounterState): (counter: Counter) => STM.STM<void>
-  (counter: Counter, other: CounterState): STM.STM<void>
-} = dual(2, (counter: Counter, other: CounterState): STM.STM<void> => counter.merge(other))
+  (other: Counter.CounterState): (counter: Counter.Counter) => STM.STM<void>
+  (counter: Counter.Counter, other: Counter.CounterState): STM.STM<void>
+} = dual(2, (counter: Counter.Counter, other: Counter.CounterState): STM.STM<void> => counter.merge(other))
 
 /**
  * Get the current state of a counter.
@@ -377,4 +368,4 @@ export const merge: {
  * @since 0.1.0
  * @category getters
  */
-export const query = (counter: Counter): STM.STM<CounterState> => counter.query
+export const query = (counter: Counter.Counter): STM.STM<Counter.CounterState> => counter.query

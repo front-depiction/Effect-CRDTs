@@ -15,12 +15,9 @@
  * @since 0.1.0
  */
 
-import * as Array from "effect/Array"
 import * as Context from "effect/Context"
 import * as Data from "effect/Data"
 import * as Effect from "effect/Effect"
-import * as Equal from "effect/Equal"
-import * as Hash from "effect/Hash"
 import { dual, pipe } from "effect/Function"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
@@ -28,10 +25,31 @@ import * as Schema from "effect/Schema"
 import * as STM from "effect/STM"
 import * as TRef from "effect/TRef"
 import type { Mutable } from "effect/Types"
-import { CRDTTypeId, type GrowOnlySet, type GSetState, type ReplicaId } from "./CRDT.js"
+import { CRDTTypeId, type ReplicaId } from "./CRDT.js"
+import * as SetCRDT from "./CRDTSet.js"
 import { mergeSets } from "./internal/merge.js"
-import { getStateSync, isCRDT, makeEqualImpl, makeProtoBase } from "./internal/proto.js"
+import { isCRDT, makeProtoBase } from "./internal/proto.js"
 import * as Persistence from "./Persistence.js"
+
+// =============================================================================
+// Symbols
+// =============================================================================
+
+/**
+ * G-Set type identifier.
+ *
+ * @since 0.1.0
+ * @category symbols
+ */
+export const GSetTypeId: unique symbol = Symbol.for("effect-crdts/GSet")
+
+/**
+ * G-Set type identifier type.
+ *
+ * @since 0.1.0
+ * @category symbols
+ */
+export type GSetTypeId = typeof GSetTypeId
 
 // =============================================================================
 // Errors
@@ -52,11 +70,13 @@ export class GSetError extends Data.TaggedError("GSetError")<{
 // =============================================================================
 
 /**
- * Type guard to check if a value is a GrowOnlySet.
+ * Type guard to check if a value is a GSet.
  *
- * @internal
+ * @since 0.1.0
+ * @category guards
  */
-const isGrowOnlySet = (u: unknown): u is GrowOnlySet<unknown> => isCRDT(u)
+export const isGSet = <A>(u: unknown): u is SetCRDT.GrowOnlySet<A> =>
+  isCRDT(u) && GSetTypeId in u
 
 // =============================================================================
 // Proto Objects
@@ -64,26 +84,8 @@ const isGrowOnlySet = (u: unknown): u is GrowOnlySet<unknown> => isCRDT(u)
 
 /** @internal */
 const ProtoGSet = {
-  ...makeProtoBase<GSetState<any>>(CRDTTypeId),
-  [Equal.symbol]: makeEqualImpl<GrowOnlySet<any>>(isGrowOnlySet),
-  [Hash.symbol](this: GrowOnlySet<any>): number {
-    const state: GSetState<any> = getStateSync(this.stateRef)
-    return pipe(
-      Array.fromIterable(state.added),
-      Array.map((item) => Hash.hash(item)),
-      Array.prepend(Hash.hash(state.replicaId)),
-      Array.prepend(Hash.string("GSet")),
-      (hashes) => Array.reduce(hashes, 0, (acc, h) => acc ^ h)
-    )
-  },
-  toJSON(this: GrowOnlySet<any>) {
-    const state: GSetState<any> = getStateSync(this.stateRef)
-    return {
-      _id: "GSet",
-      replicaId: state.replicaId,
-      size: state.added.size
-    }
-  }
+  ...makeProtoBase<SetCRDT.GSetState<any>>(CRDTTypeId),
+  [GSetTypeId]: GSetTypeId
 }
 
 // =============================================================================
@@ -123,7 +125,7 @@ const ProtoGSet = {
  * @since 0.1.0
  * @category tags
  */
-export const GSet = <A>() => Context.GenericTag<GrowOnlySet<A>>("GSet")
+export const GSet = <A>() => Context.GenericTag<SetCRDT.GrowOnlySet<A>>("GSet")
 
 // =============================================================================
 // Layers
@@ -156,13 +158,11 @@ export const Live = <A>(replicaId: ReplicaId) =>
   Layer.effect(
     GSet<A>(),
     Effect.gen(function* () {
-      const stateRef = yield* STM.commit(
-        TRef.make<GSetState<A>>({
-          type: "GSet",
-          replicaId,
-          added: new Set()
-        })
-      )
+      const stateRef = yield* TRef.make<SetCRDT.GSetState<A>>({
+        type: "GSet",
+        replicaId,
+        added: new Set()
+      })
 
       return makeGSet<A>(replicaId, stateRef)
     })
@@ -200,7 +200,7 @@ export const withPersistence = <A, I, R>(
   elementSchema: Schema.Schema<A, I, R>,
   replicaId: ReplicaId
 ) => {
-  const stateSchema: Schema.Schema<GSetState<A>, GSetState<A>, R> = Schema.Struct({
+  const stateSchema: Schema.Schema<SetCRDT.GSetState<A>, SetCRDT.GSetState<A>, R> = Schema.Struct({
     type: Schema.Literal("GSet"),
     replicaId: Schema.String as unknown as Schema.Schema<ReplicaId, ReplicaId, never>,
     added: Schema.ReadonlySet(elementSchema)
@@ -211,9 +211,9 @@ export const withPersistence = <A, I, R>(
     Effect.gen(function* () {
       const basePersistence = yield* Persistence.CRDTPersistence
       const persistence = basePersistence.forSchema(stateSchema)
-      const loadedState: Option.Option<GSetState<A>> = yield* persistence.load(replicaId)
+      const loadedState: Option.Option<SetCRDT.GSetState<A>> = yield* persistence.load(replicaId)
 
-      const initialState: GSetState<A> = pipe(
+      const initialState: SetCRDT.GSetState<A> = pipe(
         loadedState,
         Option.getOrElse(() => ({
           type: "GSet" as const,
@@ -222,13 +222,14 @@ export const withPersistence = <A, I, R>(
         }))
       )
 
-      const stateRef = yield* STM.commit(TRef.make(initialState))
+      const stateRef = yield* TRef.make(initialState)
       const set = makeGSet<A>(replicaId, stateRef)
 
       // Setup auto-save on finalization
       yield* Effect.addFinalizer(() =>
         pipe(
-          STM.commit(TRef.get(stateRef)),
+          TRef.get(stateRef),
+          STM.commit,
           Effect.flatMap((state) => persistence.save(replicaId, state)),
           Effect.ignoreLogged
         )
@@ -248,8 +249,8 @@ export const withPersistence = <A, I, R>(
  *
  * @internal
  */
-const makeGSet = <A>(replicaId: ReplicaId, stateRef: TRef.TRef<GSetState<A>>): GrowOnlySet<A> => {
-  const set: Mutable<GrowOnlySet<A>> = Object.create(ProtoGSet)
+const makeGSet = <A>(replicaId: ReplicaId, stateRef: TRef.TRef<SetCRDT.GSetState<A>>): SetCRDT.GrowOnlySet<A> => {
+  const set: Mutable<SetCRDT.GrowOnlySet<A>> = Object.create(ProtoGSet)
   set.stateRef = stateRef
   set.replicaId = replicaId
 
@@ -324,15 +325,13 @@ const makeGSet = <A>(replicaId: ReplicaId, stateRef: TRef.TRef<GSetState<A>>): G
  * @since 0.1.0
  * @category constructors
  */
-export const make = <A>(replicaId: ReplicaId): Effect.Effect<GrowOnlySet<A>> =>
+export const make = <A>(replicaId: ReplicaId): Effect.Effect<SetCRDT.GrowOnlySet<A>> =>
   Effect.gen(function* () {
-    const stateRef = yield* STM.commit(
-      TRef.make<GSetState<A>>({
-        type: "GSet",
-        replicaId,
-        added: new Set()
-      })
-    )
+    const stateRef = yield* TRef.make<SetCRDT.GSetState<A>>({
+      type: "GSet",
+      replicaId,
+      added: new Set()
+    })
     return makeGSet<A>(replicaId, stateRef)
   })
 
@@ -355,9 +354,9 @@ export const make = <A>(replicaId: ReplicaId): Effect.Effect<GrowOnlySet<A>> =>
  * @category operations
  */
 export const add: {
-  <A>(value: A): (set: GrowOnlySet<A>) => STM.STM<void>
-  <A>(set: GrowOnlySet<A>, value: A): STM.STM<void>
-} = dual(2, <A>(set: GrowOnlySet<A>, value: A): STM.STM<void> => set.add(value))
+  <A>(value: A): (set: SetCRDT.GrowOnlySet<A>) => STM.STM<void>
+  <A>(set: SetCRDT.GrowOnlySet<A>, value: A): STM.STM<void>
+} = dual(2, <A>(set: SetCRDT.GrowOnlySet<A>, value: A): STM.STM<void> => set.add(value))
 
 /**
  * Check if a set contains an element.
@@ -379,9 +378,9 @@ export const add: {
  * @category getters
  */
 export const has: {
-  <A>(value: A): (set: GrowOnlySet<A>) => STM.STM<boolean>
-  <A>(set: GrowOnlySet<A>, value: A): STM.STM<boolean>
-} = dual(2, <A>(set: GrowOnlySet<A>, value: A): STM.STM<boolean> => set.has(value))
+  <A>(value: A): (set: SetCRDT.GrowOnlySet<A>) => STM.STM<boolean>
+  <A>(set: SetCRDT.GrowOnlySet<A>, value: A): STM.STM<boolean>
+} = dual(2, <A>(set: SetCRDT.GrowOnlySet<A>, value: A): STM.STM<boolean> => set.has(value))
 
 /**
  * Get all values in a set.
@@ -402,7 +401,7 @@ export const has: {
  * @since 0.1.0
  * @category getters
  */
-export const values = <A>(set: GrowOnlySet<A>): STM.STM<ReadonlySet<A>> => set.values
+export const values = <A>(set: SetCRDT.GrowOnlySet<A>): STM.STM<ReadonlySet<A>> => set.values
 
 /**
  * Get the size of a set.
@@ -410,7 +409,7 @@ export const values = <A>(set: GrowOnlySet<A>): STM.STM<ReadonlySet<A>> => set.v
  * @since 0.1.0
  * @category getters
  */
-export const size = <A>(set: GrowOnlySet<A>): STM.STM<number> => set.size
+export const size = <A>(set: SetCRDT.GrowOnlySet<A>): STM.STM<number> => set.size
 
 /**
  * Merge another set's state into this set.
@@ -440,9 +439,9 @@ export const size = <A>(set: GrowOnlySet<A>): STM.STM<number> => set.size
  * @category operations
  */
 export const merge: {
-  <A>(other: GSetState<A>): (set: GrowOnlySet<A>) => STM.STM<void>
-  <A>(set: GrowOnlySet<A>, other: GSetState<A>): STM.STM<void>
-} = dual(2, <A>(set: GrowOnlySet<A>, other: GSetState<A>): STM.STM<void> => set.merge(other))
+  <A>(other: SetCRDT.GSetState<A>): (set: SetCRDT.GrowOnlySet<A>) => STM.STM<void>
+  <A>(set: SetCRDT.GrowOnlySet<A>, other: SetCRDT.GSetState<A>): STM.STM<void>
+} = dual(2, <A>(set: SetCRDT.GrowOnlySet<A>, other: SetCRDT.GSetState<A>): STM.STM<void> => set.merge(other))
 
 /**
  * Get the current state of a set.
@@ -450,4 +449,4 @@ export const merge: {
  * @since 0.1.0
  * @category getters
  */
-export const query = <A>(set: GrowOnlySet<A>): STM.STM<GSetState<A>> => set.query
+export const query = <A>(set: SetCRDT.GrowOnlySet<A>): STM.STM<SetCRDT.GSetState<A>> => set.query
