@@ -10,18 +10,16 @@
  */
 
 import * as Effect from "effect/Effect"
-import * as STM from "effect/STM"
 import * as Console from "effect/Console"
-import * as Layer from "effect/Layer"
 import * as PNCounter from "../src/PNCounter.js"
 import * as Persistence from "../src/Persistence.js"
 import { ReplicaId } from "../src/CRDT.js"
 
 // Analytics metrics for a blog post
 interface Metrics {
-  pageViews: PNCounter.Counter
-  likes: PNCounter.Counter
-  shares: PNCounter.Counter
+  pageViews: PNCounter.PNCounter
+  likes: PNCounter.PNCounter
+  shares: PNCounter.PNCounter
 }
 
 // Simulate analytics collection
@@ -30,21 +28,21 @@ const collectMetrics = (metrics: Metrics, serverName: string) =>
     yield* Console.log(`📊 ${serverName} collecting metrics...`)
 
     // Simulate page views
-    yield* STM.commit(metrics.pageViews.increment(Math.floor(Math.random() * 50) + 10))
+    yield* PNCounter.increment(metrics.pageViews, Math.floor(Math.random() * 50) + 10)
 
     // Simulate likes
-    yield* STM.commit(metrics.likes.increment(Math.floor(Math.random() * 20) + 5))
+    yield* PNCounter.increment(metrics.likes, Math.floor(Math.random() * 20) + 5)
 
     // Simulate shares
-    yield* STM.commit(metrics.shares.increment(Math.floor(Math.random() * 10) + 1))
+    yield* PNCounter.increment(metrics.shares, Math.floor(Math.random() * 10) + 1)
   })
 
 // Display current metrics
 const displayMetrics = (metrics: Metrics, label: string) =>
   Effect.gen(function* () {
-    const views = yield* STM.commit(metrics.pageViews.value)
-    const likes = yield* STM.commit(metrics.likes.value)
-    const shares = yield* STM.commit(metrics.shares.value)
+    const views = yield* PNCounter.value(metrics.pageViews)
+    const likes = yield* PNCounter.value(metrics.likes)
+    const shares = yield* PNCounter.value(metrics.shares)
 
     yield* Console.log(`\n${label}`)
     yield* Console.log("─".repeat(50))
@@ -64,18 +62,18 @@ const program = Effect.gen(function* () {
   yield* Console.log("🚀 Starting Server 1 (us-east)...")
 
   const server1ViewsCounter = yield* Effect.provide(
-    PNCounter.PNCounter,
-    PNCounter.PNCounter.withPersistence(ReplicaId("us-east-views"))
+    PNCounter.Tag,
+    PNCounter.withPersistence(ReplicaId("us-east-views"))
   )
 
   const server1LikesCounter = yield* Effect.provide(
-    PNCounter.PNCounter,
-    PNCounter.PNCounter.withPersistence(ReplicaId("us-east-likes"))
+    PNCounter.Tag,
+    PNCounter.withPersistence(ReplicaId("us-east-likes"))
   )
 
   const server1SharesCounter = yield* Effect.provide(
-    PNCounter.PNCounter,
-    PNCounter.PNCounter.withPersistence(ReplicaId("us-east-shares"))
+    PNCounter.Tag,
+    PNCounter.withPersistence(ReplicaId("us-east-shares"))
   )
 
   const server1Metrics = {
@@ -88,18 +86,18 @@ const program = Effect.gen(function* () {
   yield* Console.log("🚀 Starting Server 2 (eu-west)...")
 
   const server2ViewsCounter = yield* Effect.provide(
-    PNCounter.PNCounter,
-    PNCounter.PNCounter.withPersistence(ReplicaId("eu-west-views"))
+    PNCounter.Tag,
+    PNCounter.withPersistence(ReplicaId("eu-west-views"))
   )
 
   const server2LikesCounter = yield* Effect.provide(
-    PNCounter.PNCounter,
-    PNCounter.PNCounter.withPersistence(ReplicaId("eu-west-likes"))
+    PNCounter.Tag,
+    PNCounter.withPersistence(ReplicaId("eu-west-likes"))
   )
 
   const server2SharesCounter = yield* Effect.provide(
-    PNCounter.PNCounter,
-    PNCounter.PNCounter.withPersistence(ReplicaId("eu-west-shares"))
+    PNCounter.Tag,
+    PNCounter.withPersistence(ReplicaId("eu-west-shares"))
   )
 
   const server2Metrics = {
@@ -129,32 +127,32 @@ const program = Effect.gen(function* () {
   // Sync servers
   yield* Console.log("\n🔄 Syncing servers...")
 
-  const s1ViewsState = yield* STM.commit(server1Metrics.pageViews.query)
-  const s1LikesState = yield* STM.commit(server1Metrics.likes.query)
-  const s1SharesState = yield* STM.commit(server1Metrics.shares.query)
+  const s1ViewsState = yield* PNCounter.query(server1Metrics.pageViews)
+  const s1LikesState = yield* PNCounter.query(server1Metrics.likes)
+  const s1SharesState = yield* PNCounter.query(server1Metrics.shares)
 
-  const s2ViewsState = yield* STM.commit(server2Metrics.pageViews.query)
-  const s2LikesState = yield* STM.commit(server2Metrics.likes.query)
-  const s2SharesState = yield* STM.commit(server2Metrics.shares.query)
+  const s2ViewsState = yield* PNCounter.query(server2Metrics.pageViews)
+  const s2LikesState = yield* PNCounter.query(server2Metrics.likes)
+  const s2SharesState = yield* PNCounter.query(server2Metrics.shares)
 
-  yield* STM.commit(server1Metrics.pageViews.merge(s2ViewsState))
-  yield* STM.commit(server1Metrics.likes.merge(s2LikesState))
-  yield* STM.commit(server1Metrics.shares.merge(s2SharesState))
+  yield* PNCounter.merge(server1Metrics.pageViews, s2ViewsState)
+  yield* PNCounter.merge(server1Metrics.likes, s2LikesState)
+  yield* PNCounter.merge(server1Metrics.shares, s2SharesState)
 
-  yield* STM.commit(server2Metrics.pageViews.merge(s1ViewsState))
-  yield* STM.commit(server2Metrics.likes.merge(s1LikesState))
-  yield* STM.commit(server2Metrics.shares.merge(s1SharesState))
+  yield* PNCounter.merge(server2Metrics.pageViews, s1ViewsState)
+  yield* PNCounter.merge(server2Metrics.likes, s1LikesState)
+  yield* PNCounter.merge(server2Metrics.shares, s1SharesState)
 
   yield* displayMetrics(server1Metrics, "✨ Server 1 (After Sync)")
   yield* displayMetrics(server2Metrics, "✨ Server 2 (After Sync)")
 
   // Show that both servers have identical state
-  const s1Views = yield* STM.commit(server1Metrics.pageViews.value)
-  const s2Views = yield* STM.commit(server2Metrics.pageViews.value)
-  const s1Likes = yield* STM.commit(server1Metrics.likes.value)
-  const s2Likes = yield* STM.commit(server2Metrics.likes.value)
-  const s1Shares = yield* STM.commit(server1Metrics.shares.value)
-  const s2Shares = yield* STM.commit(server2Metrics.shares.value)
+  const s1Views = yield* PNCounter.value(server1Metrics.pageViews)
+  const s2Views = yield* PNCounter.value(server2Metrics.pageViews)
+  const s1Likes = yield* PNCounter.value(server1Metrics.likes)
+  const s2Likes = yield* PNCounter.value(server2Metrics.likes)
+  const s1Shares = yield* PNCounter.value(server1Metrics.shares)
+  const s2Shares = yield* PNCounter.value(server2Metrics.shares)
 
   yield* Console.log("")
   if (s1Views === s2Views && s1Likes === s2Likes && s1Shares === s2Shares) {
@@ -171,7 +169,7 @@ const program = Effect.gen(function* () {
   yield* Console.log("   • No coordination: Each server works independently")
   yield* Console.log("")
 }).pipe(
-  Effect.provide(Persistence.layerMemoryPersistence())
+  Effect.provide(Persistence.layerMemory)
 )
 
 // Run the demo

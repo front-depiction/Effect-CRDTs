@@ -7,47 +7,33 @@
 
 import * as Effect from "effect/Effect"
 import * as Console from "effect/Console"
-import * as STM from "effect/STM"
 import * as Layer from "effect/Layer"
-import * as Schema from "effect/Schema"
 import * as KeyValueStore from "@effect/platform/KeyValueStore"
-import * as FileSystem from "@effect/platform/FileSystem"
-import * as Path from "@effect/platform/Path"
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem"
 import * as BunPath from "@effect/platform-bun/BunPath"
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import * as PNCounter from "../src/PNCounter.js"
 import * as Persistence from "../src/Persistence.js"
-import { ReplicaId, type CounterState } from "../src/CRDT.js"
+import { ReplicaId } from "../src/CRDT.js"
 
-// Schema for CounterState
-const CounterStateSchema = Schema.Struct({
-  type: Schema.Literal("PNCounter"),
-  replicaId: Schema.String,
-  counts: Schema.Map({
-    key: Schema.String,
-    value: Schema.Number
-  }),
-  decrements: Schema.optional(Schema.Map({
-    key: Schema.String,
-    value: Schema.Number
-  }))
-})
+// No need for separate schema - we'll use the one from PNCounter module
 
 // Load counter from directory
 const loadCounter = (replicaName: string, dataDir: string) =>
   Effect.gen(function* () {
-    const counter = yield* PNCounter.PNCounter
-    const value = yield* STM.commit(counter.value)
-    const state = yield* STM.commit(counter.query)
+    const counter = yield* PNCounter.Tag
+    const value = yield* PNCounter.value(counter)
+    const state = yield* PNCounter.query(counter)
 
     return { counter, value, state }
   }).pipe(
-    Effect.provide(PNCounter.PNCounter.withPersistence(ReplicaId(replicaName))),
-    Effect.provide(Persistence.withSchemaLayer(CounterStateSchema)),
-    Effect.provide(KeyValueStore.layerFileSystem(dataDir)),
-    Effect.provide(BunFileSystem.layer),
-    Effect.provide(BunPath.layer)
+    Effect.provide(
+      PNCounter.withPersistence(ReplicaId(replicaName)).pipe(
+        Layer.provide(Persistence.layer),
+        Layer.provide(KeyValueStore.layerFileSystem(dataDir)),
+        Layer.provide(Layer.mergeAll(BunFileSystem.layer, BunPath.layer))
+      )
+    )
   )
 
 // Main sync program
@@ -84,7 +70,7 @@ const program = Effect.gen(function* () {
   for (const replica of loaded) {
     for (const other of loaded) {
       if (replica.name !== other.name) {
-        yield* STM.commit(replica.counter.merge(other.state))
+        yield* PNCounter.merge(replica.counter, other.state)
       }
     }
   }
@@ -94,7 +80,7 @@ const program = Effect.gen(function* () {
   yield* Console.log("")
 
   for (const replica of loaded) {
-    const finalValue = yield* STM.commit(replica.counter.value)
+    const finalValue = yield* PNCounter.value(replica.counter)
     yield* Console.log(`  ${replica.name.padEnd(12)} = ${finalValue}`)
   }
 

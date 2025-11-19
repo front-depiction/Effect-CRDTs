@@ -10,52 +10,61 @@
  */
 
 import * as Effect from "effect/Effect"
-import * as Schedule from "effect/Schedule"
-import * as STM from "effect/STM"
 import * as Console from "effect/Console"
-import * as Duration from "effect/Duration"
-import * as Fiber from "effect/Fiber"
 import * as Random from "effect/Random"
+import * as Duration from "effect/Duration"
 import * as PNCounter from "../src/PNCounter.js"
-import * as CRDT from "../src/CRDT.js"
+import { ReplicaId } from "../src/CRDT.js"
 
-// Simulates a network sync between replicas
+// Network latencies for each replica (in milliseconds)
+type ReplicaLatencies = ReadonlyMap<string, number>
+
+// Simulates a network sync between replicas with latency
 const syncReplicas = (
-  replica1: CRDT.Counter,
-  replica2: CRDT.Counter,
+  replica1: PNCounter.PNCounter,
+  replica2: PNCounter.PNCounter,
   name1: string,
-  name2: string
+  name2: string,
+  latencies: ReplicaLatencies
 ) =>
   Effect.gen(function* () {
+    // Calculate network latency (average of both replicas)
+    const latency1 = latencies.get(name1) ?? 0
+    const latency2 = latencies.get(name2) ?? 0
+    const networkLatency = Math.floor((latency1 + latency2) / 2)
+
+    yield* Console.log(`🔄 Syncing ${name1} ↔ ${name2} (latency: ${networkLatency}ms)...`)
+
+    // Simulate network latency
+    yield* Effect.sleep(Duration.millis(networkLatency))
+
     // Get state from both replicas
-    const state1 = yield* STM.commit(replica1.query)
-    const state2 = yield* STM.commit(replica2.query)
+    const state1 = yield* PNCounter.query(replica1)
+    const state2 = yield* PNCounter.query(replica2)
 
     // Merge states (simulating network sync)
-    yield* STM.commit(replica1.merge(state2))
-    yield* STM.commit(replica2.merge(state1))
+    yield* PNCounter.merge(replica1, state2)
+    yield* PNCounter.merge(replica2, state1)
 
-    yield* Console.log(`🔄 Synced ${name1} ↔ ${name2}`)
+    yield* Console.log(`  ✓ Sync complete`)
   })
 
 // Simulates user activity on a replica
 const simulateActivity = (
-  replica: CRDT.Counter,
+  replica: PNCounter.PNCounter,
   replicaName: string,
   color: string
 ) =>
   Effect.gen(function* () {
-    // Use Random module
-
     // Random increment/decrement
     const value = yield* Random.nextIntBetween(1, 5)
     const isIncrement = yield* Random.nextBoolean
 
     if (isIncrement) {
-      yield* STM.commit(replica.increment(value))
+      yield* PNCounter.increment(replica, value)
       yield* Console.log(`${color}📈 ${replicaName}: +${value}`)
     } else {
-      yield* STM.commit(replica.decrement(value))
+      yield* PNCounter.decrement(replica, value)
       yield* Console.log(`${color}📉 ${replicaName}: -${value}`)
     }
   })
@@ -66,18 +75,31 @@ const program = Effect.gen(function* () {
   yield* Console.log("=".repeat(50))
   yield* Console.log("")
 
+  // Assign random network latencies to each replica (50-200ms)
+  const latencies: ReplicaLatencies = new Map([
+    ["US-EAST", yield* Random.nextIntBetween(50, 150)],
+    ["EU-WEST", yield* Random.nextIntBetween(50, 150)],
+    ["ASIA-PAC", yield* Random.nextIntBetween(100, 200)]
+  ])
+
+  yield* Console.log("🌐 Network Latencies:")
+  yield* Console.log(`   US-EAST:      ${latencies.get("US-EAST")}ms`)
+  yield* Console.log(`   EU-WEST:      ${latencies.get("EU-WEST")}ms`)
+  yield* Console.log(`   ASIA-PACIFIC: ${latencies.get("ASIA-PAC")}ms`)
+  yield* Console.log("")
+
   // Create three replicas (simulating different servers/regions)
-  const replica1 = yield* PNCounter.make(CRDT.ReplicaId("us-east"))
-  const replica2 = yield* PNCounter.make(CRDT.ReplicaId("eu-west"))
-  const replica3 = yield* PNCounter.make(CRDT.ReplicaId("asia-pacific"))
+  const replica1 = yield* PNCounter.make(ReplicaId("us-east"))
+  const replica2 = yield* PNCounter.make(ReplicaId("eu-west"))
+  const replica3 = yield* PNCounter.make(ReplicaId("asia-pacific"))
 
   yield* Console.log("✅ Created 3 replicas: us-east, eu-west, asia-pacific")
   yield* Console.log("")
 
   // Set initial values
-  yield* STM.commit(replica1.increment(100))
-  yield* STM.commit(replica2.increment(100))
-  yield* STM.commit(replica3.increment(100))
+  yield* PNCounter.increment(replica1, 100)
+  yield* PNCounter.increment(replica2, 100)
+  yield* PNCounter.increment(replica3, 100)
 
   yield* Console.log("🎯 Initial state: Each replica starts with 100")
   yield* Console.log("")
@@ -92,22 +114,22 @@ const program = Effect.gen(function* () {
     yield* simulateActivity(replica3, "ASIA-PAC", "\x1b[35m")
 
     // Show values before sync
-    const val1 = yield* STM.commit(replica1.value)
-    const val2 = yield* STM.commit(replica2.value)
-    const val3 = yield* STM.commit(replica3.value)
+    const val1 = yield* PNCounter.value(replica1)
+    const val2 = yield* PNCounter.value(replica2)
+    const val3 = yield* PNCounter.value(replica3)
 
     yield* Console.log(`\x1b[0m  Before sync: US=${val1}, EU=${val2}, ASIA=${val3}`)
 
     // Sync replicas (simulating periodic network sync)
     if (round % 3 === 0) {
-      yield* syncReplicas(replica1, replica2, "US-EAST", "EU-WEST")
-      yield* syncReplicas(replica2, replica3, "EU-WEST", "ASIA-PAC")
-      yield* syncReplicas(replica1, replica3, "US-EAST", "ASIA-PAC")
+      yield* syncReplicas(replica1, replica2, "US-EAST", "EU-WEST", latencies)
+      yield* syncReplicas(replica2, replica3, "EU-WEST", "ASIA-PAC", latencies)
+      yield* syncReplicas(replica1, replica3, "US-EAST", "ASIA-PAC", latencies)
 
       // Show values after sync
-      const syncedVal1 = yield* STM.commit(replica1.value)
-      const syncedVal2 = yield* STM.commit(replica2.value)
-      const syncedVal3 = yield* STM.commit(replica3.value)
+      const syncedVal1 = yield* PNCounter.value(replica1)
+      const syncedVal2 = yield* PNCounter.value(replica2)
+      const syncedVal3 = yield* PNCounter.value(replica3)
 
       yield* Console.log(`  After sync:  US=${syncedVal1}, EU=${syncedVal2}, ASIA=${syncedVal3}`)
       yield* Console.log("  ✨ All replicas converged!")
@@ -116,14 +138,14 @@ const program = Effect.gen(function* () {
 
   // Final sync to ensure convergence
   yield* Console.log("\n🔄 Final synchronization...")
-  yield* syncReplicas(replica1, replica2, "US-EAST", "EU-WEST")
-  yield* syncReplicas(replica2, replica3, "EU-WEST", "ASIA-PAC")
-  yield* syncReplicas(replica1, replica3, "US-EAST", "ASIA-PAC")
+  yield* syncReplicas(replica1, replica2, "US-EAST", "EU-WEST", latencies)
+  yield* syncReplicas(replica2, replica3, "EU-WEST", "ASIA-PAC", latencies)
+  yield* syncReplicas(replica1, replica3, "US-EAST", "ASIA-PAC", latencies)
 
   // Show final state
-  const finalVal1 = yield* STM.commit(replica1.value)
-  const finalVal2 = yield* STM.commit(replica2.value)
-  const finalVal3 = yield* STM.commit(replica3.value)
+  const finalVal1 = yield* PNCounter.value(replica1)
+  const finalVal2 = yield* PNCounter.value(replica2)
+  const finalVal3 = yield* PNCounter.value(replica3)
 
   yield* Console.log("")
   yield* Console.log("=".repeat(50))

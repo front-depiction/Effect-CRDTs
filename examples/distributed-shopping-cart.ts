@@ -9,24 +9,9 @@
  */
 
 import * as Effect from "effect/Effect"
-import * as STM from "effect/STM"
 import * as Console from "effect/Console"
 import * as GSet from "../src/GSet.js"
-import * as PNCounter from "../src/PNCounter.js"
 import { ReplicaId } from "../src/CRDT.js"
-
-// Product type
-interface Product {
-  readonly id: string
-  readonly name: string
-  readonly price: number
-}
-
-// Cart item with product and quantity
-interface CartItem {
-  readonly product: Product
-  readonly quantity: number
-}
 
 // Simulate a shopping cart with GSet for items
 const program = Effect.gen(function* () {
@@ -45,11 +30,11 @@ const program = Effect.gen(function* () {
 
   // Mobile: User adds items while commuting (offline)
   yield* Console.log("📍 Mobile App (Offline):")
-  yield* STM.commit(mobileCart.add("product-001:laptop"))
-  yield* STM.commit(mobileCart.add("product-002:mouse"))
-  yield* STM.commit(mobileCart.add("product-003:keyboard"))
+  yield* GSet.add(mobileCart, "product-001:laptop")
+  yield* GSet.add(mobileCart, "product-002:mouse")
+  yield* GSet.add(mobileCart, "product-003:keyboard")
 
-  const mobileItems = yield* STM.commit(mobileCart.values)
+  const mobileItems = yield* GSet.values(mobileCart)
   yield* Console.log(`   Added ${mobileItems.size} items`)
   for (const item of mobileItems) {
     yield* Console.log(`   - ${item}`)
@@ -58,11 +43,11 @@ const program = Effect.gen(function* () {
 
   // Web: User browsing at work (offline)
   yield* Console.log("📍 Web Browser (Offline):")
-  yield* STM.commit(webCart.add("product-004:monitor"))
-  yield* STM.commit(webCart.add("product-005:webcam"))
-  yield* STM.commit(webCart.add("product-002:mouse")) // Same item!
+  yield* GSet.add(webCart, "product-004:monitor")
+  yield* GSet.add(webCart, "product-005:webcam")
+  yield* GSet.add(webCart, "product-002:mouse") // Same item!
 
-  const webItems = yield* STM.commit(webCart.values)
+  const webItems = yield* GSet.values(webCart)
   yield* Console.log(`   Added ${webItems.size} items`)
   for (const item of webItems) {
     yield* Console.log(`   - ${item}`)
@@ -71,11 +56,11 @@ const program = Effect.gen(function* () {
 
   // Desktop: User shopping at home
   yield* Console.log("📍 Desktop App (Offline):")
-  yield* STM.commit(desktopCart.add("product-006:headphones"))
-  yield* STM.commit(desktopCart.add("product-001:laptop")) // Same laptop!
-  yield* STM.commit(desktopCart.add("product-007:usb-hub"))
+  yield* GSet.add(desktopCart, "product-006:headphones")
+  yield* GSet.add(desktopCart, "product-001:laptop") // Same laptop!
+  yield* GSet.add(desktopCart, "product-007:usb-hub")
 
-  const desktopItems = yield* STM.commit(desktopCart.values)
+  const desktopItems = yield* GSet.values(desktopCart)
   yield* Console.log(`   Added ${desktopItems.size} items`)
   for (const item of desktopItems) {
     yield* Console.log(`   - ${item}`)
@@ -87,24 +72,24 @@ const program = Effect.gen(function* () {
   yield* Console.log("")
 
   // Get states from all devices
-  const mobileState = yield* STM.commit(mobileCart.query)
-  const webState = yield* STM.commit(webCart.query)
-  const desktopState = yield* STM.commit(desktopCart.query)
+  const mobileState = yield* GSet.query(mobileCart)
+  const webState = yield* GSet.query(webCart)
+  const desktopState = yield* GSet.query(desktopCart)
 
   // Merge all states (each device gets all items)
-  yield* STM.commit(mobileCart.merge(webState))
-  yield* STM.commit(mobileCart.merge(desktopState))
+  yield* GSet.merge(mobileCart, webState)
+  yield* GSet.merge(mobileCart, desktopState)
 
-  yield* STM.commit(webCart.merge(mobileState))
-  yield* STM.commit(webCart.merge(desktopState))
+  yield* GSet.merge(webCart, mobileState)
+  yield* GSet.merge(webCart, desktopState)
 
-  yield* STM.commit(desktopCart.merge(mobileState))
-  yield* STM.commit(desktopCart.merge(webState))
+  yield* GSet.merge(desktopCart, mobileState)
+  yield* GSet.merge(desktopCart, webState)
 
   // Show merged cart on each device
-  const finalMobile = yield* STM.commit(mobileCart.values)
-  const finalWeb = yield* STM.commit(webCart.values)
-  const finalDesktop = yield* STM.commit(desktopCart.values)
+  const finalMobile = yield* GSet.values(mobileCart)
+  const finalWeb = yield* GSet.values(webCart)
+  const finalDesktop = yield* GSet.values(desktopCart)
 
   yield* Console.log("✅ Sync Complete!")
   yield* Console.log("")
@@ -118,7 +103,7 @@ const program = Effect.gen(function* () {
 
   for (const item of allItems) {
     const [productId, name] = item.split(":")
-    yield* Console.log(`   ✓ ${name.toUpperCase().padEnd(15)} (${productId})`)
+    yield* Console.log(`   ✓ ${(name || "").toUpperCase().padEnd(15)} (${productId})`)
   }
 
   yield* Console.log("")

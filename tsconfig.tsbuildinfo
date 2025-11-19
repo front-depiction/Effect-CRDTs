@@ -1,0 +1,1 @@
+{"root":["./src/crdt.ts","./src/crdtcounter.ts","./src/crdtmap.ts","./src/crdtregister.ts","./src/crdtset.ts","./src/gcounter.ts","./src/gset.ts","./src/pncounter.ts","./src/persistence.ts","./src/internal/merge.ts","./src/internal/proto.ts"],"version":"5.9.3"}

@@ -21,7 +21,10 @@
     "example:counter": "bun examples/collaborative-counter.ts",
     "example:cart": "bun examples/distributed-shopping-cart.ts",
     "example:analytics": "bun examples/persistent-analytics.ts",
-    "examples": "bun run example:counter && echo '' && bun run example:cart && echo '' && bun run example:analytics"
+    "examples": "bun run example:counter && echo '' && bun run example:cart && echo '' && bun run example:analytics",
+    "server": "bun examples/server.ts",
+    "client": "bun examples/client.ts",
+    "verify": "bun examples/verify-sync.ts"
   },
   "keywords": [
     "effect",

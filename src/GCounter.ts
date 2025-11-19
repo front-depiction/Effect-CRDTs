@@ -23,14 +23,12 @@ import { dual, pipe } from "effect/Function"
 import * as Layer from "effect/Layer"
 import * as Number from "effect/Number"
 import * as Option from "effect/Option"
+import * as Predicate from "effect/Predicate"
 import * as STM from "effect/STM"
-import * as TRef from "effect/TRef"
+import * as TMap from "effect/TMap"
 import type { Mutable } from "effect/Types"
-import { CRDTTypeId, type ReplicaId } from "./CRDT.js"
-import * as Counter from "./CRDTCounter.js"
-import { mergeMaps } from "./internal/merge.js"
-import { isCRDT, makeProtoBase } from "./internal/proto.js"
-import * as Persistence from "./Persistence.js"
+import type { ReplicaId } from "./CRDT.js"
+import { makeProtoBase } from "./internal/proto.js"
 
 // =============================================================================
 // Symbols
@@ -53,6 +51,46 @@ export const GCounterTypeId: unique symbol = Symbol.for("effect-crdts/GCounter")
 export type GCounterTypeId = typeof GCounterTypeId
 
 // =============================================================================
+// Models
+// =============================================================================
+
+/**
+ * State of a G-Counter CRDT for persistence.
+ *
+ * @since 0.1.0
+ * @category models
+ */
+export interface CounterState {
+  readonly type: "GCounter"
+  readonly replicaId: ReplicaId
+  readonly counts: ReadonlyMap<ReplicaId, number>
+}
+
+/**
+ * G-Counter CRDT data structure.
+ *
+ * @since 0.1.0
+ * @category models
+ */
+export interface GCounter extends GCounter.Variance {
+  readonly replicaId: ReplicaId
+  readonly counts: TMap.TMap<ReplicaId, number>
+}
+
+/**
+ * @since 0.1.0
+ */
+export declare namespace GCounter {
+  /**
+   * @since 0.1.0
+   * @category models
+   */
+  export interface Variance {
+    readonly [GCounterTypeId]: GCounterTypeId
+  }
+}
+
+// =============================================================================
 // Errors
 // =============================================================================
 
@@ -64,7 +102,7 @@ export type GCounterTypeId = typeof GCounterTypeId
  */
 export class GCounterError extends Data.TaggedError("GCounterError")<{
   readonly message: string
-}> { }
+}> {}
 
 // =============================================================================
 // Type Guards
@@ -76,204 +114,85 @@ export class GCounterError extends Data.TaggedError("GCounterError")<{
  * @since 0.1.0
  * @category guards
  */
-export const isGCounter = (u: unknown): u is Counter.Counter =>
-  isCRDT(u) && GCounterTypeId in u
+export const isGCounter = (u: unknown): u is GCounter =>
+  Predicate.hasProperty(u, GCounterTypeId)
 
 // =============================================================================
 // Proto Objects
 // =============================================================================
 
 /** @internal */
-const ProtoGCounter = {
-  ...makeProtoBase<Counter.CounterState>(CRDTTypeId),
-  [Counter.CounterTypeId]: Counter.CounterTypeId,
-  [GCounterTypeId]: GCounterTypeId
-}
+const ProtoGCounter = makeProtoBase(GCounterTypeId)
 
 // =============================================================================
 // Constructors
 // =============================================================================
 
 /**
- * G-Counter service tag for dependency injection.
- *
- * @example
- * ```ts
- * import { GCounter, ReplicaId } from "effect-crdts"
- * import * as Effect from "effect/Effect"
- * import * as STM from "effect/STM"
- *
- * const program = Effect.gen(function* () {
- *   const counter = yield* GCounter
- *
- *   yield* STM.commit(counter.increment(5))
- *   yield* STM.commit(counter.increment(3))
- *
- *   const value = yield* STM.commit(counter.value)
- *   console.log("Counter value:", value) // 8
- * })
- *
- * Effect.runPromise(
- *   program.pipe(Effect.provide(GCounter.Live(ReplicaId("replica-1"))))
- * )
- * ```
- *
- * @since 0.1.0
- * @category tags
- */
-export class GCounter extends Context.Tag("GCounter")<GCounter, Counter.Counter>() {
-  /**
-   * Creates a live layer with no persistence.
-   *
-   * State will be held in memory and lost when the process exits.
-   *
-   * @since 0.1.0
-   */
-  static Live = (replicaId: ReplicaId): Layer.Layer<GCounter> =>
-    Layer.effect(
-      this,
-      Effect.gen(function* () {
-        const stateRef = yield* TRef.make<Counter.CounterState>({
-          type: "GCounter",
-          replicaId,
-          counts: new Map([[replicaId, 0]]),
-          decrements: Option.none()
-        })
-
-        return makeGCounter(replicaId, stateRef)
-      })
-    )
-
-  /**
-   * Creates a layer with persistence support.
-   *
-   * State will be loaded on initialization and can be saved.
-   * Requires CRDTPersistence to be provided.
-   *
-   * @since 0.1.0
-   */
-  static withPersistence = (replicaId: ReplicaId) =>
-    Layer.scoped(
-      this,
-      Effect.gen(function* () {
-        const basePersistence = yield* Persistence.CRDTPersistence
-        const persistence = basePersistence.forSchema(Counter.CounterState)
-        const loadedState: Option.Option<Counter.CounterState> = yield* persistence.load(replicaId)
-
-        const initialState: Counter.CounterState = pipe(
-          loadedState,
-          Option.getOrElse(() => ({
-            type: "GCounter" as const,
-            replicaId,
-            counts: new Map([[replicaId, 0]]),
-            decrements: Option.none()
-          }))
-        )
-
-        const stateRef = yield* TRef.make(initialState)
-        const counter = makeGCounter(replicaId, stateRef)
-
-        // Setup auto-save on finalization
-        yield* Effect.addFinalizer(() =>
-          pipe(
-            TRef.get(stateRef),
-            STM.commit,
-            Effect.flatMap((state) => persistence.save(replicaId, state)),
-            Effect.ignoreLogged
-          )
-        )
-
-        return counter
-      })
-    )
-}
-
-/**
- * Internal constructor for G-Counter.
- *
- * @internal
- */
-const makeGCounter = (replicaId: ReplicaId, stateRef: TRef.TRef<Counter.CounterState>): Counter.Counter => {
-  const counter: Mutable<Counter.Counter> = Object.create(ProtoGCounter)
-  counter.stateRef = stateRef
-  counter.replicaId = replicaId
-
-  counter.query = TRef.get(stateRef)
-
-  counter.merge = (other) =>
-    TRef.update(stateRef, (current) => ({
-      ...current,
-      counts: mergeMaps(current.counts, other.counts, Number.max)
-    }))
-
-  counter.delta = pipe(
-    TRef.get(stateRef),
-    STM.map((state) => Option.some(state))
-  )
-
-  counter.applyDelta = (delta) =>
-    TRef.update(stateRef, (current) => ({
-      ...current,
-      counts: mergeMaps(current.counts, delta.counts, Number.max)
-    }))
-
-  counter.increment = (value = 1) => {
-    if (value < 0) {
-      return STM.die(new GCounterError({ message: "Cannot increment by negative value" }))
-    }
-    return TRef.update(stateRef, (state) => {
-      const currentCount = state.counts.get(replicaId) ?? 0
-      const newCounts = new Map(state.counts)
-      newCounts.set(replicaId, currentCount + value)
-      return {
-        ...state,
-        counts: newCounts
-      }
-    })
-  }
-
-  counter.decrement = () => STM.die(new GCounterError({ message: "GCounter does not support decrement" }))
-
-  counter.value = pipe(
-    TRef.get(stateRef),
-    STM.map((state) => Number.sumAll(state.counts.values()))
-  )
-
-  return counter
-}
-
-/**
  * Creates a new G-Counter with the given replica ID.
  *
  * @example
  * ```ts
- * import { make, ReplicaId } from "effect-crdts/GCounter"
+ * import { make, increment, value, ReplicaId } from "effect-crdts/GCounter"
  * import * as Effect from "effect/Effect"
  * import * as STM from "effect/STM"
  *
  * const program = Effect.gen(function* () {
  *   const counter = yield* make(ReplicaId("replica-1"))
  *
- *   yield* STM.commit(counter.increment(10))
- *   const value = yield* STM.commit(counter.value)
+ *   yield* STM.commit(increment(counter, 10))
+ *   const val = yield* STM.commit(value(counter))
  *
- *   console.log("Value:", value) // 10
+ *   console.log("Value:", val) // 10
  * })
  * ```
  *
  * @since 0.1.0
  * @category constructors
  */
-export const make = (replicaId: ReplicaId): Effect.Effect<Counter.Counter> =>
-  Effect.gen(function* () {
-    const stateRef = yield* TRef.make<Counter.CounterState>({
-      type: "GCounter",
-      replicaId,
-      counts: new Map([[replicaId, 0]]),
-      decrements: Option.none()
-    })
-    return makeGCounter(replicaId, stateRef)
-  })
+export const make = (replicaId: ReplicaId): Effect.Effect<GCounter> =>
+  STM.gen(function* () {
+    const counts = yield* TMap.make<ReplicaId, number>([replicaId, 0])
+    const counter: Mutable<GCounter> = Object.create(ProtoGCounter)
+    counter.replicaId = replicaId
+    counter.counts = counts
+    return counter
+  }).pipe(STM.commit)
+
+/**
+ * Creates a G-Counter from a persisted state.
+ *
+ * @example
+ * ```ts
+ * import { fromState, value, ReplicaId } from "effect-crdts/GCounter"
+ * import * as Effect from "effect/Effect"
+ * import * as STM from "effect/STM"
+ *
+ * const program = Effect.gen(function* () {
+ *   const state = {
+ *     type: "GCounter" as const,
+ *     replicaId: ReplicaId("replica-1"),
+ *     counts: new Map([[ReplicaId("replica-1"), 5]])
+ *   }
+ *
+ *   const counter = yield* fromState(state)
+ *   const val = yield* STM.commit(value(counter))
+ *
+ *   console.log("Value:", val) // 5
+ * })
+ * ```
+ *
+ * @since 0.1.0
+ * @category constructors
+ */
+export const fromState = (state: CounterState): Effect.Effect<GCounter> =>
+  STM.gen(function* () {
+    const counts = yield* TMap.fromIterable(state.counts.entries())
+    const counter: Mutable<GCounter> = Object.create(ProtoGCounter)
+    counter.replicaId = state.replicaId
+    counter.counts = counts
+    return counter
+  }).pipe(STM.commit)
 
 // =============================================================================
 // Operations
@@ -284,13 +203,21 @@ export const make = (replicaId: ReplicaId): Effect.Effect<Counter.Counter> =>
  *
  * @example
  * ```ts
- * import { GCounter, increment } from "effect-crdts/GCounter"
- * import * as Effect from "effect/Effect"
+ * import { make, increment, value, ReplicaId } from "effect-crdts/GCounter"
+ * import { pipe } from "effect/Function"
  * import * as STM from "effect/STM"
  *
- * const program = Effect.gen(function* () {
- *   const counter = yield* GCounter
- *   yield* STM.commit(increment(counter, 5))
+ * const program = STM.gen(function* () {
+ *   const counter = yield* make(ReplicaId("replica-1"))
+ *
+ *   // Data-first style
+ *   yield* increment(counter, 5)
+ *
+ *   // Data-last style (pipe)
+ *   yield* pipe(counter, increment(3))
+ *
+ *   const val = yield* value(counter)
+ *   console.log("Value:", val) // 8
  * })
  * ```
  *
@@ -298,54 +225,51 @@ export const make = (replicaId: ReplicaId): Effect.Effect<Counter.Counter> =>
  * @category operations
  */
 export const increment: {
-  (value?: number): (counter: Counter.Counter) => STM.STM<void>
-  (counter: Counter.Counter, value?: number): STM.STM<void>
+  (value?: number): (self: GCounter) => STM.STM<void>
+  (self: GCounter, value?: number): STM.STM<void>
 } = dual(
   (args) => isGCounter(args[0]),
-  (counter: Counter.Counter, value?: number): STM.STM<void> => counter.increment(value)
+  (self: GCounter, value = 1): STM.STM<void> => {
+    if (value < 0) {
+      return STM.die(new GCounterError({ message: "Cannot increment by negative value" }))
+    }
+    return pipe(
+      TMap.get(self.counts, self.replicaId),
+      STM.flatMap((currentOpt) => {
+        const current = Option.getOrElse(currentOpt, () => 0)
+        return TMap.set(self.counts, self.replicaId, current + value)
+      })
+    )
+  }
 )
-
-/**
- * Get the current value of a counter.
- *
- * @example
- * ```ts
- * import { GCounter, value } from "effect-crdts/GCounter"
- * import * as Effect from "effect/Effect"
- * import * as STM from "effect/STM"
- *
- * const program = Effect.gen(function* () {
- *   const counter = yield* GCounter
- *   const val = yield* STM.commit(value(counter))
- *   console.log("Value:", val)
- * })
- * ```
- *
- * @since 0.1.0
- * @category getters
- */
-export const value = (counter: Counter.Counter): STM.STM<number> => counter.value
 
 /**
  * Merge another counter's state into this counter.
  *
+ * Takes the maximum count for each replica ID.
+ *
  * @example
  * ```ts
- * import { make, merge, increment, value, ReplicaId } from "effect-crdts/GCounter"
- * import * as Effect from "effect/Effect"
+ * import { make, increment, merge, value, query, ReplicaId } from "effect-crdts/GCounter"
+ * import { pipe } from "effect/Function"
  * import * as STM from "effect/STM"
  *
- * const program = Effect.gen(function* () {
+ * const program = STM.gen(function* () {
  *   const counter1 = yield* make(ReplicaId("replica-1"))
  *   const counter2 = yield* make(ReplicaId("replica-2"))
  *
- *   yield* STM.commit(increment(counter1, 5))
- *   yield* STM.commit(increment(counter2, 3))
+ *   yield* increment(counter1, 5)
+ *   yield* increment(counter2, 3)
  *
- *   const state2 = yield* STM.commit(counter2.query)
- *   yield* STM.commit(merge(counter1, state2))
+ *   const state2 = yield* query(counter2)
  *
- *   const val = yield* STM.commit(value(counter1))
+ *   // Data-first style
+ *   yield* merge(counter1, state2)
+ *
+ *   // Data-last style (pipe)
+ *   // yield* pipe(counter1, merge(state2))
+ *
+ *   const val = yield* value(counter1)
  *   console.log("Merged value:", val) // 8
  * })
  * ```
@@ -354,14 +278,132 @@ export const value = (counter: Counter.Counter): STM.STM<number> => counter.valu
  * @category operations
  */
 export const merge: {
-  (other: Counter.CounterState): (counter: Counter.Counter) => STM.STM<void>
-  (counter: Counter.Counter, other: Counter.CounterState): STM.STM<void>
-} = dual(2, (counter: Counter.Counter, other: Counter.CounterState): STM.STM<void> => counter.merge(other))
+  (other: CounterState): (self: GCounter) => STM.STM<void>
+  (self: GCounter, other: CounterState): STM.STM<void>
+} = dual(
+  2,
+  (self: GCounter, other: CounterState): STM.STM<void> =>
+    STM.forEach(other.counts.entries(), ([replicaId, count]) =>
+      pipe(
+        TMap.get(self.counts, replicaId),
+        STM.flatMap((currentOpt) => {
+          const current = Option.getOrElse(currentOpt, () => 0)
+          return TMap.set(self.counts, replicaId, Math.max(current, count))
+        })
+      )
+    ).pipe(STM.asVoid)
+)
+
+// =============================================================================
+// Getters
+// =============================================================================
 
 /**
- * Get the current state of a counter.
+ * Get the current value of a counter.
+ *
+ * The value is the sum of all replica counts.
+ *
+ * @example
+ * ```ts
+ * import { make, increment, value, ReplicaId } from "effect-crdts/GCounter"
+ * import { pipe } from "effect/Function"
+ * import * as STM from "effect/STM"
+ *
+ * const program = STM.gen(function* () {
+ *   const counter = yield* make(ReplicaId("replica-1"))
+ *   yield* increment(counter, 5)
+ *   yield* increment(counter, 3)
+ *
+ *   const val = yield* value(counter)
+ *   console.log("Value:", val) // 8
+ * })
+ * ```
  *
  * @since 0.1.0
  * @category getters
  */
-export const query = (counter: Counter.Counter): STM.STM<Counter.CounterState> => counter.query
+export const value = (self: GCounter): STM.STM<number> =>
+  pipe(
+    TMap.values(self.counts),
+    STM.map(Number.sumAll)
+  )
+
+/**
+ * Get the current state of a counter.
+ *
+ * Returns the state suitable for persistence or merging with other replicas.
+ *
+ * @example
+ * ```ts
+ * import { make, increment, query, ReplicaId } from "effect-crdts/GCounter"
+ * import * as STM from "effect/STM"
+ *
+ * const program = STM.gen(function* () {
+ *   const counter = yield* make(ReplicaId("replica-1"))
+ *   yield* increment(counter, 5)
+ *
+ *   const state = yield* query(counter)
+ *   console.log("State:", state)
+ * })
+ * ```
+ *
+ * @since 0.1.0
+ * @category getters
+ */
+export const query = (self: GCounter): STM.STM<CounterState> =>
+  pipe(
+    TMap.toMap(self.counts),
+    STM.map((counts) => ({
+      type: "GCounter" as const,
+      replicaId: self.replicaId,
+      counts
+    }))
+  )
+
+// =============================================================================
+// Tags
+// =============================================================================
+
+/**
+ * GCounter service tag for dependency injection.
+ *
+ * @since 0.1.0
+ * @category tags
+ */
+export const Tag = Context.GenericTag<GCounter>("@effect-crdts/GCounter")
+
+// =============================================================================
+// Layers
+// =============================================================================
+
+/**
+ * Creates a live layer with the given replica ID.
+ *
+ * @example
+ * ```ts
+ * import * as GCounter from "effect-crdts/GCounter"
+ * import * as Effect from "effect/Effect"
+ * import * as STM from "effect/STM"
+ *
+ * const program = Effect.gen(function* () {
+ *   const counter = yield* GCounter.Tag
+ *   yield* STM.commit(GCounter.increment(counter, 5))
+ *   const val = yield* STM.commit(GCounter.value(counter))
+ *   console.log("Value:", val) // 5
+ * })
+ *
+ * Effect.runPromise(
+ *   program.pipe(
+ *     Effect.provide(GCounter.Live(GCounter.ReplicaId("replica-1")))
+ *   )
+ * )
+ * ```
+ *
+ * @since 0.1.0
+ * @category layers
+ */
+export const Live = (replicaId: ReplicaId): Layer.Layer<GCounter> =>
+  Layer.effect(
+    Tag,
+    make(replicaId)
+  )

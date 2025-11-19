@@ -7,35 +7,18 @@
 
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
-import * as Schema from "effect/Schema"
 import * as HttpServer from "@effect/platform/HttpServer"
 import * as HttpRouter from "@effect/platform/HttpRouter"
 import * as HttpServerResponse from "@effect/platform/HttpServerResponse"
+import * as HttpServerRequest from "@effect/platform/HttpServerRequest"
 import * as KeyValueStore from "@effect/platform/KeyValueStore"
-import * as FileSystem from "@effect/platform/FileSystem"
-import * as Path from "@effect/platform/Path"
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem"
 import * as BunPath from "@effect/platform-bun/BunPath"
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import * as Console from "effect/Console"
-import * as PNCounter from "../src/PNCounter.js"
-import * as Persistence from "../src/Persistence.js"
-import { ReplicaId, type CounterState } from "../src/CRDT.js"
-
-// Schema for CounterState
-const CounterStateSchema = Schema.Struct({
-  type: Schema.Literal("PNCounter"),
-  replicaId: Schema.String,
-  counts: Schema.Map({
-    key: Schema.String,
-    value: Schema.Number
-  }),
-  decrements: Schema.optional(Schema.Map({
-    key: Schema.String,
-    value: Schema.Number
-  }))
-})
+import { ReplicaId } from "../src/CRDT.js"
+import { PNCounterState } from "../src/CRDTCounter.js"
 
 // API routes
 const router = HttpRouter.empty.pipe(
@@ -48,13 +31,13 @@ const router = HttpRouter.empty.pipe(
   HttpRouter.get("/counter/:replicaId",
     Effect.gen(function* () {
       const params = yield* HttpRouter.params
-      const replicaId = ReplicaId(params.replicaId)
+      const replicaId = ReplicaId(params.replicaId!)
 
       const store = yield* KeyValueStore.KeyValueStore
-      const schemaStore = store.forSchema(CounterStateSchema)
+      const schemaStore = store.forSchema(PNCounterState)
       const state = yield* schemaStore.get(replicaId)
 
-      return HttpServerResponse.json({
+      return yield* HttpServerResponse.json({
         replicaId,
         state
       })
@@ -65,40 +48,40 @@ const router = HttpRouter.empty.pipe(
   HttpRouter.post("/counter/:replicaId",
     Effect.gen(function* () {
       const params = yield* HttpRouter.params
-      const request = yield* HttpServer.request.HttpServerRequest
+      const request = yield* HttpServerRequest.HttpServerRequest
       const body = yield* request.json
 
-      const replicaId = ReplicaId(params.replicaId)
-      const state = body as CounterState
+      const replicaId = ReplicaId(params.replicaId!)
+      const state = body as PNCounterState
 
       const store = yield* KeyValueStore.KeyValueStore
-      const schemaStore = store.forSchema(CounterStateSchema)
+      const schemaStore = store.forSchema(PNCounterState)
       yield* schemaStore.set(replicaId, state)
 
       yield* Console.log(`📥 Received state from ${replicaId}`)
 
-      return HttpServerResponse.json({ success: true })
+      return yield* HttpServerResponse.json({ success: true })
     })
   ),
 
   // Sync: merge states from all replicas
   HttpRouter.post("/sync",
     Effect.gen(function* () {
-      const request = yield* HttpServer.request.HttpServerRequest
+      const request = yield* HttpServerRequest.HttpServerRequest
       const body = yield* request.json
 
-      const { replicaId, state } = body as { replicaId: string; state: CounterState }
+      const { replicaId, state } = body as { replicaId: string; state: PNCounterState }
 
       yield* Console.log(`🔄 Sync request from ${replicaId}`)
 
       const store = yield* KeyValueStore.KeyValueStore
-      const schemaStore = store.forSchema(CounterStateSchema)
+      const schemaStore = store.forSchema(PNCounterState)
       yield* schemaStore.set(ReplicaId(replicaId), state)
 
       // TODO: Get all other replica states and return them for merging
       // For now, just acknowledge
 
-      return HttpServerResponse.json({
+      return yield* HttpServerResponse.json({
         success: true,
         message: "State synced"
       })
@@ -122,7 +105,7 @@ const keyValueStoreLayer = KeyValueStore.layerFileSystem("./data/server").pipe(
 
 // Combine all dependency layers
 const dependencies = Layer.mergeAll(
-  BunHttpServer.layer({ port: 3000 }),
+  BunHttpServer.layer({ port: 3001 }),
   keyValueStoreLayer,
   fileSystemLayers
 )

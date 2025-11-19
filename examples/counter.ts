@@ -7,19 +7,20 @@
  */
 
 import * as Effect from "effect/Effect"
-import * as STM from "effect/STM"
-import { GCounter, PNCounter, ReplicaId } from "../src/index.js"
+import * as GCounter from "../src/GCounter.js"
+import * as PNCounter from "../src/PNCounter.js"
+import { ReplicaId } from "../src/CRDT.js"
 
 // Example 1: Simple G-Counter usage
 const simpleGCounter = Effect.gen(function* () {
   console.log("=== Simple G-Counter Example ===")
 
-  const counter = yield* GCounter.GCounter
+  const counter = yield* GCounter.Tag
 
-  yield* STM.commit(counter.increment(5))
-  yield* STM.commit(counter.increment(3))
+  yield* GCounter.increment(counter, 5)
+  yield* GCounter.increment(counter, 3)
 
-  const value = yield* STM.commit(counter.value)
+  const value = yield* GCounter.value(counter)
   console.log("Counter value:", value) // 8
 })
 
@@ -33,26 +34,26 @@ const multiReplicaGCounter = Effect.gen(function* () {
 
   // Each replica increments independently
   console.log("Replica 1 increments by 10")
-  yield* STM.commit(replica1.increment(10))
+  yield* GCounter.increment(replica1, 10)
 
   console.log("Replica 2 increments by 20")
-  yield* STM.commit(replica2.increment(20))
+  yield* GCounter.increment(replica2, 20)
 
   // Before sync
-  const value1Before = yield* STM.commit(replica1.value)
-  const value2Before = yield* STM.commit(replica2.value)
+  const value1Before = yield* GCounter.value(replica1)
+  const value2Before = yield* GCounter.value(replica2)
   console.log("Before sync - Replica 1:", value1Before, "Replica 2:", value2Before)
 
   // Synchronize replicas
-  const state2 = yield* STM.commit(replica2.query)
-  yield* STM.commit(replica1.merge(state2))
+  const state2 = yield* GCounter.query(replica2)
+  yield* GCounter.merge(replica1, state2)
 
-  const state1 = yield* STM.commit(replica1.query)
-  yield* STM.commit(replica2.merge(state1))
+  const state1 = yield* GCounter.query(replica1)
+  yield* GCounter.merge(replica2, state1)
 
   // After sync - both should have same value
-  const value1After = yield* STM.commit(replica1.value)
-  const value2After = yield* STM.commit(replica2.value)
+  const value1After = yield* GCounter.value(replica1)
+  const value2After = yield* GCounter.value(replica2)
   console.log("After sync - Replica 1:", value1After, "Replica 2:", value2After)
 })
 
@@ -60,18 +61,18 @@ const multiReplicaGCounter = Effect.gen(function* () {
 const pnCounterExample = Effect.gen(function* () {
   console.log("\n=== PN-Counter Example ===")
 
-  const counter = yield* PNCounter.PNCounter
+  const counter = yield* PNCounter.Tag
 
   console.log("Incrementing by 10")
-  yield* STM.commit(counter.increment(10))
+  yield* PNCounter.increment(counter, 10)
 
   console.log("Decrementing by 3")
-  yield* STM.commit(counter.decrement(3))
+  yield* PNCounter.decrement(counter, 3)
 
   console.log("Incrementing by 5")
-  yield* STM.commit(counter.increment(5))
+  yield* PNCounter.increment(counter, 5)
 
-  const value = yield* STM.commit(counter.value)
+  const value = yield* PNCounter.value(counter)
   console.log("Final value:", value) // 12
 })
 
@@ -83,31 +84,31 @@ const multiReplicaPNCounter = Effect.gen(function* () {
   const replica2 = yield* PNCounter.make(ReplicaId("replica-2"))
 
   // Replica 1: +10, -3 = 7
-  yield* STM.commit(replica1.increment(10))
-  yield* STM.commit(replica1.decrement(3))
+  yield* PNCounter.increment(replica1, 10)
+  yield* PNCounter.decrement(replica1, 3)
 
   // Replica 2: +20, -5 = 15
-  yield* STM.commit(replica2.increment(20))
-  yield* STM.commit(replica2.decrement(5))
+  yield* PNCounter.increment(replica2, 20)
+  yield* PNCounter.decrement(replica2, 5)
 
-  console.log("Replica 1 value:", yield* STM.commit(replica1.value))
-  console.log("Replica 2 value:", yield* STM.commit(replica2.value))
+  console.log("Replica 1 value:", yield* PNCounter.value(replica1))
+  console.log("Replica 2 value:", yield* PNCounter.value(replica2))
 
   // Merge replicas
-  const state2 = yield* STM.commit(replica2.query)
-  yield* STM.commit(replica1.merge(state2))
+  const state2 = yield* PNCounter.query(replica2)
+  yield* PNCounter.merge(replica1, state2)
 
-  const mergedValue = yield* STM.commit(replica1.value)
+  const mergedValue = yield* PNCounter.value(replica1)
   console.log("Merged value:", mergedValue) // 22
 })
 
 // Run all examples
 const program = Effect.gen(function* () {
-  yield* simpleGCounter.pipe(Effect.provide(GCounter.GCounter.Live(ReplicaId("simple-replica"))))
+  yield* simpleGCounter.pipe(Effect.provide(GCounter.Live(ReplicaId("simple-replica"))))
 
   yield* multiReplicaGCounter
 
-  yield* pnCounterExample.pipe(Effect.provide(PNCounter.PNCounter.Live(ReplicaId("pn-replica"))))
+  yield* pnCounterExample.pipe(Effect.provide(PNCounter.Live(ReplicaId("pn-replica"))))
 
   yield* multiReplicaPNCounter
 })

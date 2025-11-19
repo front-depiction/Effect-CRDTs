@@ -7,14 +7,14 @@
 import { describe, it, expect } from "vitest"
 import * as Effect from "effect/Effect"
 import * as STM from "effect/STM"
-import * as GCounter from "../../src/GCounter"
-import { ReplicaId } from "../../src/CRDT"
+import * as GCounter from "./GCounter"
+import { ReplicaId } from "./CRDT"
 
 describe("GCounter", () => {
   it("should start with value 0", async () => {
     const program = Effect.gen(function* () {
       const counter = yield* GCounter.make(ReplicaId("replica-1"))
-      return yield* STM.commit(counter.value)
+      return yield* STM.commit(GCounter.value(counter))
     })
 
     const result = await Effect.runPromise(program)
@@ -25,11 +25,11 @@ describe("GCounter", () => {
     const program = Effect.gen(function* () {
       const counter = yield* GCounter.make(ReplicaId("replica-1"))
 
-      yield* STM.commit(counter.increment(5))
-      const val1 = yield* STM.commit(counter.value)
+      yield* STM.commit(GCounter.increment(counter, 5))
+      const val1 = yield* STM.commit(GCounter.value(counter))
 
-      yield* STM.commit(counter.increment(3))
-      const val2 = yield* STM.commit(counter.value)
+      yield* STM.commit(GCounter.increment(counter, 3))
+      const val2 = yield* STM.commit(GCounter.value(counter))
 
       return { val1, val2 }
     })
@@ -44,13 +44,13 @@ describe("GCounter", () => {
       const counter1 = yield* GCounter.make(ReplicaId("replica-1"))
       const counter2 = yield* GCounter.make(ReplicaId("replica-2"))
 
-      yield* STM.commit(counter1.increment(10))
-      yield* STM.commit(counter2.increment(20))
+      yield* STM.commit(GCounter.increment(counter1, 10))
+      yield* STM.commit(GCounter.increment(counter2, 20))
 
-      const state2 = yield* STM.commit(counter2.query)
-      yield* STM.commit(counter1.merge(state2))
+      const state2 = yield* STM.commit(GCounter.query(counter2))
+      yield* STM.commit(GCounter.merge(counter1, state2))
 
-      return yield* STM.commit(counter1.value)
+      return yield* STM.commit(GCounter.value(counter1))
     })
 
     const result = await Effect.runPromise(program)
@@ -63,32 +63,32 @@ describe("GCounter", () => {
       const counter2 = yield* GCounter.make(ReplicaId("replica-2"))
       const counter3 = yield* GCounter.make(ReplicaId("replica-3"))
 
-      yield* STM.commit(counter1.increment(5))
-      yield* STM.commit(counter2.increment(10))
-      yield* STM.commit(counter3.increment(15))
+      yield* STM.commit(GCounter.increment(counter1, 5))
+      yield* STM.commit(GCounter.increment(counter2, 10))
+      yield* STM.commit(GCounter.increment(counter3, 15))
 
-      const state1 = yield* STM.commit(counter1.query)
-      const state2 = yield* STM.commit(counter2.query)
-      const state3 = yield* STM.commit(counter3.query)
+      const state1 = yield* STM.commit(GCounter.query(counter1))
+      const state2 = yield* STM.commit(GCounter.query(counter2))
+      const state3 = yield* STM.commit(GCounter.query(counter3))
 
       const merged = yield* GCounter.make(ReplicaId("merged"))
-      yield* STM.commit(merged.merge(state1))
-      yield* STM.commit(merged.merge(state2))
-      yield* STM.commit(merged.merge(state3))
+      yield* STM.commit(GCounter.merge(merged, state1))
+      yield* STM.commit(GCounter.merge(merged, state2))
+      yield* STM.commit(GCounter.merge(merged, state3))
 
-      return yield* STM.commit(merged.value)
+      return yield* STM.commit(GCounter.value(merged))
     })
 
     const result = await Effect.runPromise(program)
     expect(result).toBe(30)
   })
 
-  it("should not support decrement", async () => {
+  it("should not support negative increment", async () => {
     const program = Effect.gen(function* () {
       const counter = yield* GCounter.make(ReplicaId("replica-1"))
-      yield* STM.commit(counter.increment(10))
+      yield* STM.commit(GCounter.increment(counter, 10))
 
-      return yield* STM.commit(counter.decrement())
+      return yield* STM.commit(GCounter.increment(counter, -5))
     })
 
     await expect(Effect.runPromise(program)).rejects.toThrow()
@@ -97,8 +97,8 @@ describe("GCounter", () => {
   it("should handle increment by zero", async () => {
     const program = Effect.gen(function* () {
       const counter = yield* GCounter.make(ReplicaId("replica-1"))
-      yield* STM.commit(counter.increment(0))
-      return yield* STM.commit(counter.value)
+      yield* STM.commit(GCounter.increment(counter, 0))
+      return yield* STM.commit(GCounter.value(counter))
     })
 
     const result = await Effect.runPromise(program)
@@ -107,14 +107,14 @@ describe("GCounter", () => {
 
   it("should use Layer for dependency injection", async () => {
     const program = Effect.gen(function* () {
-      const counter = yield* GCounter.GCounter
+      const counter = yield* GCounter.Tag
 
-      yield* STM.commit(counter.increment(42))
-      return yield* STM.commit(counter.value)
+      yield* STM.commit(GCounter.increment(counter, 42))
+      return yield* STM.commit(GCounter.value(counter))
     })
 
     const result = await Effect.runPromise(
-      program.pipe(Effect.provide(GCounter.GCounter.Live(ReplicaId("replica-1"))))
+      program.pipe(Effect.provide(GCounter.Live(ReplicaId("replica-1"))))
     )
 
     expect(result).toBe(42)
@@ -125,11 +125,11 @@ describe("GCounter", () => {
       const counter = yield* GCounter.make(ReplicaId("replica-1"))
 
       // Simulate concurrent increments (they will be sequential in STM)
-      yield* STM.commit(counter.increment(1))
-      yield* STM.commit(counter.increment(2))
-      yield* STM.commit(counter.increment(3))
+      yield* STM.commit(GCounter.increment(counter, 1))
+      yield* STM.commit(GCounter.increment(counter, 2))
+      yield* STM.commit(GCounter.increment(counter, 3))
 
-      return yield* STM.commit(counter.value)
+      return yield* STM.commit(GCounter.value(counter))
     })
 
     const result = await Effect.runPromise(program)
@@ -141,24 +141,24 @@ describe("GCounter", () => {
       const counter1 = yield* GCounter.make(ReplicaId("replica-1"))
       const counter2 = yield* GCounter.make(ReplicaId("replica-2"))
 
-      yield* STM.commit(counter1.increment(5))
+      yield* STM.commit(GCounter.increment(counter1, 5))
 
       // Merge counter2 with counter1
-      const state1 = yield* STM.commit(counter1.query)
-      yield* STM.commit(counter2.merge(state1))
+      const state1 = yield* STM.commit(GCounter.query(counter1))
+      yield* STM.commit(GCounter.merge(counter2, state1))
 
       // Both should now have same value
-      const val1 = yield* STM.commit(counter1.value)
-      const val2 = yield* STM.commit(counter2.value)
+      const val1 = yield* STM.commit(GCounter.value(counter1))
+      const val2 = yield* STM.commit(GCounter.value(counter2))
 
       // Increment on counter2
-      yield* STM.commit(counter2.increment(10))
+      yield* STM.commit(GCounter.increment(counter2, 10))
 
       // Merge back to counter1
-      const state2 = yield* STM.commit(counter2.query)
-      yield* STM.commit(counter1.merge(state2))
+      const state2 = yield* STM.commit(GCounter.query(counter2))
+      yield* STM.commit(GCounter.merge(counter1, state2))
 
-      const finalVal = yield* STM.commit(counter1.value)
+      const finalVal = yield* STM.commit(GCounter.value(counter1))
 
       return { val1, val2, finalVal }
     })

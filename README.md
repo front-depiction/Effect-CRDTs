@@ -50,20 +50,20 @@ import * as STM from "effect/STM"
 import { GCounter, ReplicaId } from "effect-crdts"
 
 const program = Effect.gen(function* () {
-  const counter = yield* GCounter.GCounter
+  const counter = yield* GCounter.Tag
 
   // Increment the counter
-  yield* STM.commit(counter.increment(5))
-  yield* STM.commit(counter.increment(3))
+  yield* STM.commit(GCounter.increment(counter, 5))
+  yield* STM.commit(GCounter.increment(counter, 3))
 
   // Get the current value
-  const value = yield* STM.commit(counter.value)
+  const value = yield* STM.commit(GCounter.value(counter))
   console.log("Counter value:", value) // 8
 })
 
 // Run with a layer providing the GCounter service
 Effect.runPromise(
-  program.pipe(Effect.provide(GCounter.GCounter.Live(ReplicaId("replica-1"))))
+  program.pipe(Effect.provide(GCounter.Live(ReplicaId("replica-1"))))
 )
 ```
 
@@ -80,15 +80,15 @@ const program = Effect.gen(function* () {
   const replica2 = yield* GCounter.make(ReplicaId("replica-2"))
 
   // Each replica increments independently
-  yield* STM.commit(replica1.increment(10))
-  yield* STM.commit(replica2.increment(20))
+  yield* STM.commit(GCounter.increment(replica1, 10))
+  yield* STM.commit(GCounter.increment(replica2, 20))
 
   // Synchronize replicas by merging state
-  const state2 = yield* STM.commit(replica2.query)
-  yield* STM.commit(replica1.merge(state2))
+  const state2 = yield* STM.commit(GCounter.query(replica2))
+  yield* STM.commit(GCounter.merge(replica1, state2))
 
   // Both replicas now converge to the same value
-  const value = yield* STM.commit(replica1.value)
+  const value = yield* STM.commit(GCounter.value(replica1))
   console.log("Converged value:", value) // 30
 })
 
@@ -183,15 +183,15 @@ All CRDT operations return `STM.STM<T>`, making them:
 ```typescript
 // Composing STM operations
 const program = STM.gen(function* () {
-  const counter = yield* GCounter.GCounter
+  const counter = yield* GCounter.Tag
   const set = yield* GSet.GSet<string>()
 
   // Atomic transaction combining both CRDTs
-  yield* counter.increment(1)
+  yield* GCounter.increment(counter, 1)
   yield* set.add("item")
 
   return {
-    counterValue: yield* counter.value,
+    counterValue: yield* GCounter.value(counter),
     setSize: yield* set.size
   }
 })
@@ -220,13 +220,13 @@ Example with persistence:
 import { GCounter, ReplicaId, layerMemoryPersistence } from "effect-crdts"
 
 const program = Effect.gen(function* () {
-  const counter = yield* GCounter.GCounter
-  yield* STM.commit(counter.increment(42))
+  const counter = yield* GCounter.Tag
+  yield* STM.commit(GCounter.increment(counter, 42))
 })
 
 Effect.runPromise(
   program.pipe(
-    Effect.provide(GCounter.GCounter.withPersistence(ReplicaId("replica-1"))),
+    Effect.provide(GCounter.Live(ReplicaId("replica-1"))),
     Effect.provide(layerMemoryPersistence())
   )
 )

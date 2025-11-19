@@ -15,10 +15,10 @@ import * as Array from "effect/Array"
 import * as Effect from "effect/Effect"
 import * as FastCheck from "effect/FastCheck"
 import * as STM from "effect/STM"
-import * as GCounter from "../../src/GCounter"
-import * as PNCounter from "../../src/PNCounter"
-import * as GSet from "../../src/GSet"
-import { ReplicaId } from "../../src/CRDT"
+import * as GCounter from "./GCounter"
+import * as PNCounter from "./PNCounter"
+import * as GSet from "./GSet"
+import { ReplicaId } from "./CRDT"
 
 describe("CRDT Laws", () => {
   describe("G-Counter", () => {
@@ -40,25 +40,25 @@ describe("CRDT Laws", () => {
               const counter2 = yield* GCounter.make(ReplicaId(replicaB))
 
               // Increment both counters
-              yield* STM.commit(counter1.increment(valueA))
-              yield* STM.commit(counter2.increment(valueB))
+              yield* STM.commit(GCounter.increment(counter1, valueA))
+              yield* STM.commit(GCounter.increment(counter2, valueB))
 
               // Get states
-              const stateA = yield* STM.commit(counter1.query)
-              const stateB = yield* STM.commit(counter2.query)
+              const stateA = yield* STM.commit(GCounter.query(counter1))
+              const stateB = yield* STM.commit(GCounter.query(counter2))
 
               // Test merge(A, B)
               const counterAB1 = yield* GCounter.make(ReplicaId("test-ab1"))
               const counterAB2 = yield* GCounter.make(ReplicaId("test-ab2"))
 
-              yield* STM.commit(counterAB1.merge(stateA))
-              yield* STM.commit(counterAB1.merge(stateB))
-              const resultAB = yield* STM.commit(counterAB1.value)
+              yield* STM.commit(GCounter.merge(counterAB1, stateA))
+              yield* STM.commit(GCounter.merge(counterAB1, stateB))
+              const resultAB = yield* STM.commit(GCounter.value(counterAB1))
 
               // Test merge(B, A)
-              yield* STM.commit(counterAB2.merge(stateB))
-              yield* STM.commit(counterAB2.merge(stateA))
-              const resultBA = yield* STM.commit(counterAB2.value)
+              yield* STM.commit(GCounter.merge(counterAB2, stateB))
+              yield* STM.commit(GCounter.merge(counterAB2, stateA))
+              const resultBA = yield* STM.commit(GCounter.value(counterAB2))
 
               return resultAB === resultBA && resultAB === valueA + valueB
             })
@@ -94,27 +94,27 @@ describe("CRDT Laws", () => {
               const counterB = yield* GCounter.make(ReplicaId(replicaB))
               const counterC = yield* GCounter.make(ReplicaId(replicaC))
 
-              yield* STM.commit(counterA.increment(valueA))
-              yield* STM.commit(counterB.increment(valueB))
-              yield* STM.commit(counterC.increment(valueC))
+              yield* STM.commit(GCounter.increment(counterA, valueA))
+              yield* STM.commit(GCounter.increment(counterB, valueB))
+              yield* STM.commit(GCounter.increment(counterC, valueC))
 
-              const stateA = yield* STM.commit(counterA.query)
-              const stateB = yield* STM.commit(counterB.query)
-              const stateC = yield* STM.commit(counterC.query)
+              const stateA = yield* STM.commit(GCounter.query(counterA))
+              const stateB = yield* STM.commit(GCounter.query(counterB))
+              const stateC = yield* STM.commit(GCounter.query(counterC))
 
               // Test merge(merge(a, b), c)
               const counterLeft = yield* GCounter.make(ReplicaId("test-left"))
-              yield* STM.commit(counterLeft.merge(stateA))
-              yield* STM.commit(counterLeft.merge(stateB))
-              yield* STM.commit(counterLeft.merge(stateC))
-              const resultLeft = yield* STM.commit(counterLeft.value)
+              yield* STM.commit(GCounter.merge(counterLeft, stateA))
+              yield* STM.commit(GCounter.merge(counterLeft, stateB))
+              yield* STM.commit(GCounter.merge(counterLeft, stateC))
+              const resultLeft = yield* STM.commit(GCounter.value(counterLeft))
 
               // Test merge(a, merge(b, c))
               const counterRight = yield* GCounter.make(ReplicaId("test-right"))
-              yield* STM.commit(counterRight.merge(stateB))
-              yield* STM.commit(counterRight.merge(stateC))
-              yield* STM.commit(counterRight.merge(stateA))
-              const resultRight = yield* STM.commit(counterRight.value)
+              yield* STM.commit(GCounter.merge(counterRight, stateB))
+              yield* STM.commit(GCounter.merge(counterRight, stateC))
+              yield* STM.commit(GCounter.merge(counterRight, stateA))
+              const resultRight = yield* STM.commit(GCounter.value(counterRight))
 
               return resultLeft === resultRight && resultLeft === valueA + valueB + valueC
             })
@@ -137,15 +137,15 @@ describe("CRDT Laws", () => {
           async ({ replica, value }) => {
             const program = Effect.gen(function* () {
               const counter = yield* GCounter.make(ReplicaId(replica))
-              yield* STM.commit(counter.increment(value))
+              yield* STM.commit(GCounter.increment(counter, value))
 
-              const valueBefore = yield* STM.commit(counter.value)
-              const state = yield* STM.commit(counter.query)
+              const valueBefore = yield* STM.commit(GCounter.value(counter))
+              const state = yield* STM.commit(GCounter.query(counter))
 
               // Merge with itself
-              yield* STM.commit(counter.merge(state))
+              yield* STM.commit(GCounter.merge(counter, state))
 
-              const valueAfter = yield* STM.commit(counter.value)
+              const valueAfter = yield* STM.commit(GCounter.value(counter))
 
               return valueBefore === valueAfter && valueBefore === value
             })
@@ -167,13 +167,13 @@ describe("CRDT Laws", () => {
           const values = yield* Effect.forEach(
             Array.makeBy(10, (i) => i + 1),
             (increment) => Effect.gen(function* () {
-              yield* STM.commit(counter.increment(increment))
-              return yield* STM.commit(counter.value)
+              yield* STM.commit(GCounter.increment(counter, increment))
+              return yield* STM.commit(GCounter.value(counter))
             })
           )
 
           // Check that each value is >= the previous
-          return values.every((val, i) => i === 0 || val >= values[i - 1])
+          return values.every((val, i) => i === 0 || val >= values[i - 1]!)
         })
 
         const result = await Effect.runPromise(program)
@@ -201,25 +201,25 @@ describe("CRDT Laws", () => {
               const counter1 = yield* PNCounter.make(ReplicaId(replicaA))
               const counter2 = yield* PNCounter.make(ReplicaId(replicaB))
 
-              yield* STM.commit(counter1.increment(incA))
-              yield* STM.commit(counter1.decrement(decA))
-              yield* STM.commit(counter2.increment(incB))
-              yield* STM.commit(counter2.decrement(decB))
+              yield* STM.commit(PNCounter.increment(counter1, incA))
+              yield* STM.commit(PNCounter.decrement(counter1, decA))
+              yield* STM.commit(PNCounter.increment(counter2, incB))
+              yield* STM.commit(PNCounter.decrement(counter2, decB))
 
-              const stateA = yield* STM.commit(counter1.query)
-              const stateB = yield* STM.commit(counter2.query)
+              const stateA = yield* STM.commit(PNCounter.query(counter1))
+              const stateB = yield* STM.commit(PNCounter.query(counter2))
 
               // Test merge(A, B)
               const counterAB = yield* PNCounter.make(ReplicaId("test-ab"))
-              yield* STM.commit(counterAB.merge(stateA))
-              yield* STM.commit(counterAB.merge(stateB))
-              const resultAB = yield* STM.commit(counterAB.value)
+              yield* STM.commit(PNCounter.merge(counterAB, stateA))
+              yield* STM.commit(PNCounter.merge(counterAB, stateB))
+              const resultAB = yield* STM.commit(PNCounter.value(counterAB))
 
               // Test merge(B, A)
               const counterBA = yield* PNCounter.make(ReplicaId("test-ba"))
-              yield* STM.commit(counterBA.merge(stateB))
-              yield* STM.commit(counterBA.merge(stateA))
-              const resultBA = yield* STM.commit(counterBA.value)
+              yield* STM.commit(PNCounter.merge(counterBA, stateB))
+              yield* STM.commit(PNCounter.merge(counterBA, stateA))
+              const resultBA = yield* STM.commit(PNCounter.value(counterBA))
 
               const expected = incA - decA + incB - decB
               return resultAB === resultBA && resultAB === expected
@@ -245,16 +245,16 @@ describe("CRDT Laws", () => {
           async ({ replica, inc, dec }) => {
             const program = Effect.gen(function* () {
               const counter = yield* PNCounter.make(ReplicaId(replica))
-              yield* STM.commit(counter.increment(inc))
-              yield* STM.commit(counter.decrement(dec))
+              yield* STM.commit(PNCounter.increment(counter, inc))
+              yield* STM.commit(PNCounter.decrement(counter, dec))
 
-              const valueBefore = yield* STM.commit(counter.value)
-              const state = yield* STM.commit(counter.query)
+              const valueBefore = yield* STM.commit(PNCounter.value(counter))
+              const state = yield* STM.commit(PNCounter.query(counter))
 
               // Merge with itself
-              yield* STM.commit(counter.merge(state))
+              yield* STM.commit(PNCounter.merge(counter, state))
 
-              const valueAfter = yield* STM.commit(counter.value)
+              const valueAfter = yield* STM.commit(PNCounter.value(counter))
 
               return valueBefore === valueAfter && valueBefore === inc - dec
             })
@@ -286,23 +286,23 @@ describe("CRDT Laws", () => {
               const set2 = yield* GSet.make<string>(ReplicaId(replicaB))
 
               // Add items to both sets
-              yield* Effect.forEach(itemsA, (item) => STM.commit(set1.add(item)))
-              yield* Effect.forEach(itemsB, (item) => STM.commit(set2.add(item)))
+              yield* Effect.forEach(itemsA, (item) => STM.commit(GSet.add(set1, item)))
+              yield* Effect.forEach(itemsB, (item) => STM.commit(GSet.add(set2, item)))
 
-              const stateA = yield* STM.commit(set1.query)
-              const stateB = yield* STM.commit(set2.query)
+              const stateA = yield* STM.commit(GSet.query(set1))
+              const stateB = yield* STM.commit(GSet.query(set2))
 
               // Test merge(A, B)
               const setAB = yield* GSet.make<string>(ReplicaId("test-ab"))
-              yield* STM.commit(setAB.merge(stateA))
-              yield* STM.commit(setAB.merge(stateB))
-              const resultAB = yield* STM.commit(setAB.values)
+              yield* STM.commit(GSet.merge(setAB, stateA))
+              yield* STM.commit(GSet.merge(setAB, stateB))
+              const resultAB = yield* STM.commit(GSet.values(setAB))
 
               // Test merge(B, A)
               const setBA = yield* GSet.make<string>(ReplicaId("test-ba"))
-              yield* STM.commit(setBA.merge(stateB))
-              yield* STM.commit(setBA.merge(stateA))
-              const resultBA = yield* STM.commit(setBA.values)
+              yield* STM.commit(GSet.merge(setBA, stateB))
+              yield* STM.commit(GSet.merge(setBA, stateA))
+              const resultBA = yield* STM.commit(GSet.values(setBA))
 
               // Compare sets
               if (resultAB.size !== resultBA.size) return false
@@ -331,15 +331,15 @@ describe("CRDT Laws", () => {
             const program = Effect.gen(function* () {
               const set = yield* GSet.make<string>(ReplicaId(replica))
 
-              yield* Effect.forEach(items, (item) => STM.commit(set.add(item)))
+              yield* Effect.forEach(items, (item) => STM.commit(GSet.add(set, item)))
 
-              const sizeBefore = yield* STM.commit(set.size)
-              const state = yield* STM.commit(set.query)
+              const sizeBefore = yield* STM.commit(GSet.size(set))
+              const state = yield* STM.commit(GSet.query(set))
 
               // Merge with itself
-              yield* STM.commit(set.merge(state))
+              yield* STM.commit(GSet.merge(set, state))
 
-              const sizeAfter = yield* STM.commit(set.size)
+              const sizeAfter = yield* STM.commit(GSet.size(set))
 
               return sizeBefore === sizeAfter
             })
@@ -360,13 +360,13 @@ describe("CRDT Laws", () => {
           const sizes = yield* Effect.forEach(
             Array.makeBy(10, (i) => i),
             (i) => Effect.gen(function* () {
-              yield* STM.commit(set.add(`item-${i}`))
-              return yield* STM.commit(set.size)
+              yield* STM.commit(GSet.add(set, `item-${i}`))
+              return yield* STM.commit(GSet.size(set))
             })
           )
 
           // Check that each size is >= the previous
-          return sizes.every((size, i) => i === 0 || size >= sizes[i - 1])
+          return sizes.every((size, i) => i === 0 || size >= sizes[i - 1]!)
         })
 
         const result = await Effect.runPromise(program)
