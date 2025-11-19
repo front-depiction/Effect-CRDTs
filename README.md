@@ -1,6 +1,6 @@
 # Effect-CRDTs
 
-Effectful CRDTs (Conflict-free Replicated Data Types) using Effect's Graph and STM modules.
+Effectful CRDTs (Conflict-free Replicated Data Types) using Effect's STM and VectorClock for causal consistency.
 
 ## Overview
 
@@ -9,11 +9,12 @@ Effect-CRDTs provides a collection of production-ready CRDT implementations buil
 ## Features
 
 - **Transactional Operations**: All CRDT operations use STM for atomic, composable updates
+- **Vector Clock Causality**: Proper causal ordering using VectorClock (not just timestamps)
 - **Type-Safe**: Full TypeScript support with Effect's type system
-- **Pluggable Persistence**: Abstract persistence layer for various storage backends
+- **Pluggable Persistence**: Abstract persistence layer with Schema-based serialization
 - **Dependency Injection**: Context-based service design using Effect Layers
 - **Property-Based Testing**: Verified CRDT laws (commutativity, associativity, idempotence)
-- **Graph-Based Causality**: Leverages Effect's Graph module for causal tracking (upcoming)
+- **Dual APIs**: All operations support data-first and pipeable styles
 
 ## Installation
 
@@ -25,34 +26,40 @@ npm install effect-crdts effect
 
 ### Counters
 
-- **G-Counter** (Grow-only Counter): Increment-only counter for distributed counting
-- **PN-Counter** (Positive-Negative Counter): Counter supporting both increment and decrement
+- **GCounter** (Grow-only Counter): Increment-only counter for distributed counting
+- **PNCounter** (Positive-Negative Counter): Counter supporting both increment and decrement
 
 ### Sets
 
-- **G-Set** (Grow-only Set): Add-only set with union-based merge
+- **GSet** (Grow-only Set): Add-only set with union-based merge
+- **TwoPSet** (Two-Phase Set): Add and remove with tombstones (elements cannot be re-added)
+- **ORSet** (Observed-Remove Set): Add and remove with unique tags (supports re-adding elements)
 
-### Coming Soon
+### Registers
 
-- **2P-Set** (Two-Phase Set): Add and remove with tombstones
-- **OR-Set** (Observed-Remove Set): Add and remove with unique tags
-- **LWW-Register** (Last-Write-Wins Register): Single-value register with timestamps
-- **LWW-Map** (Last-Write-Wins Map): Key-value map with LWW semantics
-- **RGA** (Replicated Growable Array): Ordered sequence CRDT
+- **LWWRegister** (Last-Write-Wins Register): Single-value register with VectorClock-based conflict resolution
+- **MVRegister** (Multi-Value Register): Preserves concurrent writes, application resolves conflicts
+
+### Maps
+
+- **LWWMap** (Last-Write-Wins Map): Key-value map with per-key VectorClock tracking
+
+### Infrastructure
+
+- **VectorClock**: Causal ordering tracking with Before/After/Equal/Concurrent semantics
 
 ## Quick Start
 
-### G-Counter Example
+### GCounter Example
 
 ```typescript
 import * as Effect from "effect/Effect"
-import * as STM from "effect/STM"
 import { GCounter, ReplicaId } from "effect-crdts"
 
 const program = Effect.gen(function* () {
   const counter = yield* GCounter.Tag
 
-  // Increment the counter (STM operations auto-commit when yielded in Effect.gen)
+  // Increment the counter (STM operations auto-commit when yielded)
   yield* GCounter.increment(counter, 5)
   yield* GCounter.increment(counter, 3)
 
@@ -71,7 +78,6 @@ Effect.runPromise(
 
 ```typescript
 import * as Effect from "effect/Effect"
-import * as STM from "effect/STM"
 import { GCounter, ReplicaId } from "effect-crdts"
 
 const program = Effect.gen(function* () {
@@ -95,51 +101,176 @@ const program = Effect.gen(function* () {
 Effect.runPromise(program)
 ```
 
-### PN-Counter with Increments and Decrements
+### TwoPSet (Two-Phase Set)
 
 ```typescript
 import * as Effect from "effect/Effect"
-import * as STM from "effect/STM"
-import { PNCounter, ReplicaId } from "effect-crdts"
+import { TwoPSet, ReplicaId } from "effect-crdts"
 
 const program = Effect.gen(function* () {
-  const counter = yield* PNCounter.Tag
+  const set = yield* TwoPSet.make<string>(ReplicaId("replica-1"))
 
-  yield* PNCounter.increment(counter, 10)
-  yield* PNCounter.decrement(counter, 3)
-  yield* PNCounter.increment(counter, 5)
+  // Add elements
+  yield* TwoPSet.add(set, "apple")
+  yield* TwoPSet.add(set, "banana")
 
-  const value = yield* PNCounter.value(counter)
-  console.log("Final value:", value) // 12
+  // Remove an element (creates tombstone)
+  yield* TwoPSet.remove(set, "apple")
+
+  // Check membership
+  const hasApple = yield* TwoPSet.has(set, "apple")
+  console.log("Has apple:", hasApple) // false
+
+  // Cannot re-add removed elements
+  yield* TwoPSet.add(set, "apple")
+  const stillHasApple = yield* TwoPSet.has(set, "apple")
+  console.log("Still has apple:", stillHasApple) // false (tombstone prevents re-add)
+
+  const values = yield* TwoPSet.values(set)
+  console.log("Values:", values) // ["banana"]
+})
+
+Effect.runPromise(program)
+```
+
+### ORSet (Observed-Remove Set)
+
+```typescript
+import * as Effect from "effect/Effect"
+import { ORSet, ReplicaId } from "effect-crdts"
+
+const program = Effect.gen(function* () {
+  const set = yield* ORSet.make<string>(ReplicaId("replica-1"))
+
+  // Add, remove, and re-add (unlike TwoPSet!)
+  yield* ORSet.add(set, "apple")
+  yield* ORSet.remove(set, "apple")
+  yield* ORSet.add(set, "apple") // This works!
+
+  const hasApple = yield* ORSet.has(set, "apple")
+  console.log("Has apple:", hasApple) // true
+
+  // Multiple concurrent adds create multiple tags
+  const values = yield* ORSet.values(set)
+  console.log("Values:", values) // ["apple"]
+})
+
+Effect.runPromise(program)
+```
+
+### LWWRegister (Last-Write-Wins Register)
+
+```typescript
+import * as Effect from "effect/Effect"
+import { LWWRegister, VectorClock, ReplicaId } from "effect-crdts"
+
+const program = Effect.gen(function* () {
+  // Create two registers
+  const reg1 = yield* LWWRegister.make<string>(ReplicaId("replica-1"))
+  const reg2 = yield* LWWRegister.make<string>(ReplicaId("replica-2"))
+
+  // Write to both independently
+  yield* LWWRegister.set(reg1, "value1")
+  yield* LWWRegister.set(reg2, "value2")
+
+  // Merge - causal ordering determines winner
+  const state2 = yield* LWWRegister.query(reg2)
+  yield* LWWRegister.merge(reg1, state2)
+
+  const value = yield* LWWRegister.get(reg1)
+  console.log("Merged value:", value) // Concurrent writes resolved by replica ID
 })
 
 Effect.runPromise(
-  program.pipe(Effect.provide(PNCounter.Live(ReplicaId("replica-1"))))
+  program.pipe(Effect.provide(VectorClock.Live(ReplicaId("test"))))
 )
 ```
 
-### G-Set Example
+### MVRegister (Multi-Value Register)
 
 ```typescript
 import * as Effect from "effect/Effect"
-import * as STM from "effect/STM"
-import { GSet, ReplicaId } from "effect-crdts"
+import { MVRegister, ReplicaId } from "effect-crdts"
 
 const program = Effect.gen(function* () {
-  const set = yield* GSet.make<string>(ReplicaId("replica-1"))
+  const reg1 = yield* MVRegister.make<string>(ReplicaId("replica-1"))
+  const reg2 = yield* MVRegister.make<string>(ReplicaId("replica-2"))
 
-  // Add elements to the set
-  yield* GSet.add(set, "apple")
-  yield* GSet.add(set, "banana")
-  yield* GSet.add(set, "apple") // Duplicate, idempotent
+  // Concurrent writes
+  yield* MVRegister.set(reg1, "apple")
+  yield* MVRegister.set(reg2, "banana")
 
-  // Check membership
-  const hasApple = yield* GSet.has(set, "apple")
-  console.log("Has apple:", hasApple) // true
+  // Merge preserves both concurrent values
+  const state2 = yield* MVRegister.query(reg2)
+  yield* MVRegister.merge(reg1, state2)
 
-  // Get all values
-  const values = yield* GSet.values(set)
-  console.log("Values:", Array.from(values)) // ["apple", "banana"]
+  const values = yield* MVRegister.get(reg1)
+  console.log("Values:", values) // ["apple", "banana"] - application resolves
+})
+
+Effect.runPromise(program)
+```
+
+### LWWMap (Last-Write-Wins Map)
+
+```typescript
+import * as Effect from "effect/Effect"
+import { LWWMap, VectorClock, ReplicaId } from "effect-crdts"
+
+const program = Effect.gen(function* () {
+  const map = yield* LWWMap.make<string, number>(ReplicaId("replica-1"))
+
+  // Set key-value pairs
+  yield* LWWMap.set(map, "count", 42)
+  yield* LWWMap.set(map, "score", 100)
+
+  // Get a value
+  const count = yield* LWWMap.get(map, "count")
+  console.log("Count:", count) // Some(42)
+
+  // Delete (creates tombstone)
+  yield* LWWMap.delete_(map, "score")
+
+  // Get all keys (filters tombstones)
+  const keys = yield* LWWMap.keys(map)
+  console.log("Keys:", keys) // ["count"]
+})
+
+Effect.runPromise(
+  program.pipe(Effect.provide(VectorClock.Live(ReplicaId("test"))))
+)
+```
+
+## VectorClock: Proper Causal Ordering
+
+Unlike physical clocks, VectorClock provides true causal ordering:
+
+```typescript
+import * as Effect from "effect/Effect"
+import { VectorClock, ReplicaId } from "effect-crdts"
+
+const program = Effect.gen(function* () {
+  const clock1 = yield* VectorClock.make(ReplicaId("replica-1"))
+  const clock2 = yield* VectorClock.make(ReplicaId("replica-2"))
+
+  // Increment clocks
+  yield* VectorClock.increment(clock1)
+  yield* VectorClock.increment(clock1)
+
+  yield* VectorClock.increment(clock2)
+
+  // Compare for causal ordering
+  const state1 = yield* VectorClock.query(clock1)
+  const state2 = yield* VectorClock.query(clock2)
+
+  const ordering = VectorClock.compare(state1, state2)
+  console.log("Ordering:", ordering) // "Concurrent" (neither happened before the other)
+
+  // Merge clocks
+  yield* VectorClock.merge(clock1, state2)
+
+  const merged = yield* VectorClock.query(clock1)
+  console.log("Merged:", merged.counters) // Max of both: {replica-1: 2, replica-2: 1}
 })
 
 Effect.runPromise(program)
@@ -179,8 +310,6 @@ All CRDT operations return `STM.STM<T>`, making them:
 - **Retryable**: Automatic retry on conflicts
 - **Auto-commit**: When yielded in `Effect.gen`, STM operations automatically commit
 
-#### Basic Usage (Auto-commit)
-
 ```typescript
 // STM operations auto-commit when yielded in Effect.gen
 const program = Effect.gen(function* () {
@@ -195,138 +324,120 @@ const program = Effect.gen(function* () {
 })
 ```
 
-#### Batched Operations (Single Transaction)
+### VectorClock vs Timestamps
+
+**Why VectorClock over physical clocks?**
+
+VectorClock provides proper distributed systems semantics:
+- Detects causal relationships (A happened before B)
+- Identifies concurrent operations (neither happened before the other)
+- No reliance on synchronized physical clocks
+- Correct conflict resolution for CRDTs
 
 ```typescript
-// Use dual's curried form for elegant chaining
-const program = Effect.gen(function* () {
-  const counter = yield* GCounter.make(ReplicaId("replica-1"))
+// Concurrent writes with VectorClock
+const reg1 = yield* LWWRegister.make(ReplicaId("r1"))
+const reg2 = yield* LWWRegister.make(ReplicaId("r2"))
 
-  // All operations in a single transaction using STM.flatMap
-  yield* GCounter.increment(counter, 1).pipe(
-    STM.flatMap(GCounter.increment(2)),  // Curried! No lambda needed
-    STM.flatMap(GCounter.increment(3))
-  )
+yield* LWWRegister.set(reg1, "value1") // [r1: 1]
+yield* LWWRegister.set(reg2, "value2") // [r2: 1]
 
-  return yield* GCounter.value(counter) // 6
-})
-```
-
-#### Composing Multiple CRDTs
-
-```typescript
-// Multiple CRDTs in a single atomic transaction
-const program = Effect.gen(function* () {
-  const counter = yield* GCounter.make(ReplicaId("r1"))
-  const set = yield* GSet.make<string>(ReplicaId("r1"))
-
-  // Single atomic transaction
-  yield* STM.gen(function* () {
-    yield* GCounter.increment(counter, 1)
-    yield* GSet.add(set, "item")
-    return {
-      counterValue: yield* GCounter.value(counter),
-      setSize: yield* GSet.size(set)
-    }
-  })
-})
+// These are CONCURRENT (not timestamp-ordered)
+// Conflict resolved by replica ID tie-breaking
 ```
 
 ### Persistence Abstraction
 
-CRDTs can be persisted to any storage backend by implementing the `CRDTPersistence` interface:
+CRDTs support Schema-based persistence with automatic serialization:
 
 ```typescript
-interface CRDTPersistence<State> {
-  readonly load: (replicaId: ReplicaId) => Effect.Effect<Option.Option<State>, PersistenceError>
-  readonly save: (replicaId: ReplicaId, state: State) => Effect.Effect<void, PersistenceError>
-  readonly listReplicas: Effect.Effect<ReadonlyArray<ReplicaId>, PersistenceError>
-  readonly delete: (replicaId: ReplicaId) => Effect.Effect<void, PersistenceError>
-}
-```
+import { LWWRegister, ReplicaId } from "effect-crdts"
+import * as Schema from "effect/Schema"
 
-Built-in implementations:
-- **Memory**: Ephemeral in-memory storage
-- **Schema-based**: Uses Effect Schema for serialization to key-value stores
-
-Example with persistence:
-
-```typescript
-import { GCounter, ReplicaId, layerMemoryPersistence } from "effect-crdts"
-
+// Persist register with custom value type
 const program = Effect.gen(function* () {
-  const counter = yield* GCounter.Tag
-  yield* STM.commit(GCounter.increment(counter, 42))
+  const RegisterTag = Context.GenericTag<LWWRegister.LWWRegister<User>>("UserRegister")
+
+  const register = yield* RegisterTag
+
+  yield* LWWRegister.set(register, { name: "Alice", age: 30 })
 })
 
+// Provide persistence layer
 Effect.runPromise(
   program.pipe(
-    Effect.provide(GCounter.Live(ReplicaId("replica-1"))),
-    Effect.provide(layerMemoryPersistence())
+    Effect.provide(
+      LWWRegister.withPersistence(
+        RegisterTag,
+        ReplicaId("replica-1"),
+        Schema.Struct({ name: Schema.String, age: Schema.Number })
+      )
+    )
   )
 )
 ```
 
-### Context Tags for Dependency Injection
+### Dual APIs
 
-Each CRDT is exposed as an Effect Context service:
+All operations support both data-first and pipeable styles:
 
 ```typescript
-// Using layers
-const layer = GCounter.Live(ReplicaId("replica-1"))
+import { pipe } from "effect/Function"
 
-// Accessing in Effect programs
-const program = Effect.gen(function* () {
-  const counter = yield* GCounter.Tag
-  // ... use counter
-})
+// Data-first
+yield* GCounter.increment(counter, 5)
 
-Effect.runPromise(program.pipe(Effect.provide(layer)))
+// Data-last (pipeable)
+yield* pipe(counter, GCounter.increment(5))
 ```
 
 ## Testing
 
-### Run Tests
-
 ```bash
-npm test
+# Run all tests
+bun test
+
+# Run specific CRDT tests
+bun test src/GCounter.test.ts
+bun test src/ORSet.test.ts
+bun test src/MVRegister.test.ts
+
+# Type check
+bunx tsc --noEmit
 ```
 
-### Run with Coverage
+### Test Coverage
 
-```bash
-npm run test:coverage
-```
-
-### Law Tests
-
-Property-based tests verify CRDT laws for all implementations:
-
-```bash
-npm test -- test/laws
-```
+- **179 tests passing**
+- **1,210+ assertions**
+- Property-based CRDT law verification for all implementations
+- Concurrent operation scenarios
+- Merge conflict resolution tests
 
 ## Examples
 
-See the `examples/` directory for more comprehensive examples:
+See the `examples/` directory for comprehensive examples:
 
 - `counter.ts`: Counter CRDT usage patterns
-- More examples coming soon!
+- `collaborative-counter.ts`: Multi-replica coordination
+- `sync.ts`: State synchronization patterns
+- `distributed-shopping-cart.ts`: OR-Set practical application
+- `persistent-analytics.ts`: Persistence with GCounter
 
 ## Development
 
 ```bash
 # Install dependencies
-npm install
+bun install
 
 # Build
-npm run build
+bun run build
 
 # Run tests
-npm test
+bun test
 
 # Type check
-npm run typecheck
+bunx tsc --noEmit
 ```
 
 ## Project Structure
@@ -335,18 +446,23 @@ npm run typecheck
 src/
 ├── CRDT.ts                 # Core CRDT interfaces and types
 ├── Persistence.ts          # Persistence abstraction
-├── counters/               # Counter CRDTs
-│   ├── GCounter.ts
-│   └── PNCounter.ts
-├── sets/                   # Set CRDTs
-│   └── GSet.ts
+├── VectorClock.ts          # Causal ordering infrastructure
+├── GCounter.ts             # Grow-only counter
+├── PNCounter.ts            # Positive-negative counter
+├── GSet.ts                 # Grow-only set
+├── TwoPSet.ts              # Two-phase set
+├── ORSet.ts                # Observed-remove set
+├── LWWRegister.ts          # Last-write-wins register
+├── MVRegister.ts           # Multi-value register
+├── LWWMap.ts               # Last-write-wins map
+├── CRDTCounter.ts          # Counter state schemas
+├── CRDTSet.ts              # Set state schemas
+├── CRDTRegister.ts         # Register state schemas
+├── CRDTMap.ts              # Map state schemas
 └── internal/               # Internal utilities
 
-test/
-├── laws/                   # CRDT law verification
-│   └── CRDTLaws.test.ts
-└── counters/               # Unit tests
-    └── GCounter.test.ts
+test/ (embedded in src/)
+├── *.test.ts               # Unit tests with law verification
 
 examples/                   # Usage examples
 ```
@@ -355,20 +471,27 @@ examples/                   # Usage examples
 
 Contributions are welcome! Please ensure:
 
-1. All tests pass
+1. All tests pass (`bun test`)
 2. New CRDTs include property-based law tests
 3. Code follows Effect patterns and best practices
-4. Documentation is updated
+4. Use VectorClock for causal ordering (not physical timestamps)
+5. Remove unnecessary `STM.commit()` wrappers (auto-commit in Effect.gen)
+6. Documentation is updated
 
 ## Roadmap
 
-- [ ] Complete remaining CRDT implementations (2P-Set, OR-Set, LWW-Register, LWW-Map, RGA)
-- [ ] Causal graph infrastructure for CmRDT support
+- [x] Core counters (GCounter, PNCounter)
+- [x] Core sets (GSet, TwoPSet, ORSet)
+- [x] Registers (LWWRegister, MVRegister)
+- [x] Maps (LWWMap)
+- [x] VectorClock infrastructure
+- [ ] RGA (Replicated Growable Array) for ordered sequences
+- [ ] ORMap (Observed-Remove Map)
+- [ ] Delta-state CRDT optimization
 - [ ] Network synchronization protocols
-- [ ] Persistence adapters (IndexedDB, SQLite, etc.)
+- [ ] More persistence adapters (IndexedDB, SQLite, etc.)
 - [ ] Benchmarks and performance testing
-- [ ] Conflict resolution strategies
-- [ ] Delta-state synchronization
+- [ ] Merkle trees for efficient sync
 
 ## License
 

@@ -95,7 +95,7 @@ export interface MVRegister<A> {
  */
 export class MVRegisterError extends Data.TaggedError("MVRegisterError")<{
   readonly message: string
-}> {}
+}> { }
 
 // =============================================================================
 // Type Guards
@@ -223,19 +223,20 @@ const isDominated = (
   STM.gen(function* () {
     const entryClock = yield* VectorClock.query(entry.clock)
 
-    for (const other of allEntries) {
-      if (other === entry) continue
+    // Get all other entries (excluding self)
+    const others = allEntries.filter((other) => other !== entry)
 
-      const otherClock = yield* VectorClock.query(other.clock)
-      const ordering = VectorClock.compare(entryClock, otherClock)
+    // Query all clocks in one go to avoid STM retry issues with imperative loops
+    const otherClocks = yield* STM.forEach(others, (other) =>
+      pipe(
+        VectorClock.query(other.clock),
+        STM.map((clock) => clock)
+      )
+    )
 
-      // If entryClock happened before otherClock, entry is dominated
-      if (ordering === "Before") {
-        return true
-      }
-    }
-
-    return false
+    // Check if any other clock dominates this entry's clock
+    // Entry is dominated if entryClock happened before any otherClock
+    return otherClocks.some((otherClock) => VectorClock.compare(entryClock, otherClock) === "Before")
   })
 
 /**
@@ -247,14 +248,16 @@ const pruneDominated = <A>(self: MVRegister<A>): STM.STM<void> =>
   STM.gen(function* () {
     const allEntries = yield* TSet.toArray(self.values)
 
-    // Find all dominated entries
-    const toRemove: Array<MVRegisterEntry<A>> = []
-    for (const entry of allEntries) {
-      const dominated = yield* isDominated(entry, allEntries)
-      if (dominated) {
-        toRemove.push(entry)
-      }
-    }
+    // Find all dominated entries using STM.forEach to avoid imperative loop issues
+    const dominatedFlags = yield* STM.forEach(allEntries, (entry) =>
+      pipe(
+        isDominated(entry, allEntries),
+        STM.map((dominated) => ({ entry, dominated }))
+      )
+    )
+
+    // Filter to get only the dominated entries
+    const toRemove = dominatedFlags.filter(({ dominated }) => dominated).map(({ entry }) => entry)
 
     // Remove dominated entries
     for (const entry of toRemove) {
@@ -305,12 +308,14 @@ export const set: {
       // Create new vector clock by merging all existing clocks and incrementing
       const newClock = yield* VectorClock.make(self.replicaId)
 
-      // Merge all existing clocks into the new one
+      // Get all existing entries
       const allEntries = yield* TSet.toArray(self.values)
-      for (const entry of allEntries) {
-        const entryClock = yield* VectorClock.query(entry.clock)
-        yield* VectorClock.merge(newClock, entryClock)
-      }
+
+      // Query all existing clocks first to avoid STM retry issues
+      const allClocks = yield* STM.forEach(allEntries, (entry) => VectorClock.query(entry.clock))
+
+      // Merge all existing clocks into the new one
+      yield* STM.forEach(allClocks, (entryClock) => VectorClock.merge(newClock, entryClock))
 
       // Increment for this replica
       yield* VectorClock.increment(newClock)
@@ -364,24 +369,23 @@ export const merge: {
       // Get existing entries to check for duplicates
       const existingEntries = yield* TSet.toArray(self.values)
 
+      // Query all existing clocks first to avoid STM retry issues
+      const existingClocks = yield* STM.forEach(existingEntries, (entry) =>
+        pipe(
+          VectorClock.query(entry.clock),
+          STM.map((clock) => ({ entry, clock }))
+        )
+      )
+
       // Add all values from other register (avoiding duplicates)
       for (const otherEntry of other.values) {
         const otherClock = otherEntry.clock
 
         // Check if we already have this exact entry
-        let alreadyExists = false
-        for (const existing of existingEntries) {
-          const existingClock = yield* VectorClock.query(existing.clock)
-
-          // Check if value and clock are equal
-          if (
-            existing.value === otherEntry.value &&
-            VectorClock.equal(existingClock, otherClock)
-          ) {
-            alreadyExists = true
-            break
-          }
-        }
+        const alreadyExists = existingClocks.some(
+          ({ entry, clock }) =>
+            entry.value === otherEntry.value && VectorClock.equal(clock, otherClock)
+        )
 
         if (!alreadyExists) {
           const clock = yield* VectorClock.fromState(otherEntry.clock)
@@ -458,21 +462,14 @@ export const getWithClocks = <A>(
 > =>
   STM.gen(function* () {
     const entries = yield* TSet.toArray(self.values)
-    const result: Array<{
-      value: A
-      clock: {
-        readonly type: "VectorClock"
-        readonly replicaId: ReplicaId
-        readonly counters: ReadonlyMap<ReplicaId, number>
-      }
-    }> = []
 
-    for (const entry of entries) {
-      const clock = yield* VectorClock.query(entry.clock)
-      result.push({ value: entry.value, clock })
-    }
-
-    return result
+    // Query all clocks at once to avoid STM retry issues
+    return yield* STM.forEach(entries, (entry) =>
+      pipe(
+        VectorClock.query(entry.clock),
+        STM.map((clock) => ({ value: entry.value, clock }))
+      )
+    )
   })
 
 /**
@@ -500,19 +497,14 @@ export const getWithClocks = <A>(
 export const query = <A>(self: MVRegister<A>): STM.STM<MVRegisterState<A>> =>
   STM.gen(function* () {
     const entries = yield* TSet.toArray(self.values)
-    const values: Array<{
-      value: A
-      clock: {
-        readonly type: "VectorClock"
-        readonly replicaId: ReplicaId
-        readonly counters: ReadonlyMap<ReplicaId, number>
-      }
-    }> = []
 
-    for (const entry of entries) {
-      const clock = yield* VectorClock.query(entry.clock)
-      values.push({ value: entry.value, clock })
-    }
+    // Query all clocks at once to avoid STM retry issues
+    const values = yield* STM.forEach(entries, (entry) =>
+      pipe(
+        VectorClock.query(entry.clock),
+        STM.map((clock) => ({ value: entry.value, clock }))
+      )
+    )
 
     return {
       type: "MVRegister" as const,
@@ -627,14 +619,12 @@ export const withPersistence = <A, I, R>(
           onNone: () => make<A>(replicaId, initial),
           onSome: (state) => fromState(state)
         }),
-        STM.commit
       )
 
       // Setup auto-save on finalization
       yield* Effect.addFinalizer(() =>
         pipe(
           query(register),
-          STM.commit,
           Effect.flatMap((state) => persistence.save(replicaId, state)),
           Effect.ignoreLogged
         )
