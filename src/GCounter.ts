@@ -18,7 +18,6 @@
 
 import * as Context from "effect/Context"
 import * as Data from "effect/Data"
-import * as Effect from "effect/Effect"
 import { dual, pipe } from "effect/Function"
 import * as Layer from "effect/Layer"
 import * as Number from "effect/Number"

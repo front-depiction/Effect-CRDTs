@@ -8,6 +8,7 @@
  */
 import type * as Option from "effect/Option"
 import type { ReplicaId } from "./CRDT.js"
+import type { VectorClockState } from "./VectorClock.js"
 
 // =============================================================================
 // Models
@@ -16,8 +17,8 @@ import type { ReplicaId } from "./CRDT.js"
 /**
  * State of an LWW-Register (Last-Write-Wins Register) CRDT.
  *
- * An LWW-Register stores a single value with a timestamp. Conflicts are
- * resolved using timestamps (last write wins).
+ * An LWW-Register stores a single value with a vector clock. Conflicts are
+ * resolved using causal ordering (last write wins).
  *
  * @since 0.1.0
  * @category models
@@ -26,7 +27,7 @@ export interface LWWRegisterState<A> {
   readonly type: "LWWRegister"
   readonly replicaId: ReplicaId
   readonly value: Option.Option<A>
-  readonly timestamp: number
+  readonly clock: VectorClockState
 }
 
 /**
@@ -42,8 +43,14 @@ export interface LWWRegisterState<A> {
 export interface MVRegisterState<A> {
   readonly type: "MVRegister"
   readonly replicaId: ReplicaId
-  readonly value: Option.Option<A>
-  readonly timestamp: number
+  readonly values: ReadonlyArray<{
+    readonly value: A
+    readonly clock: {
+      readonly type: "VectorClock"
+      readonly replicaId: ReplicaId
+      readonly counters: ReadonlyMap<ReplicaId, number>
+    }
+  }>
 }
 
 /**

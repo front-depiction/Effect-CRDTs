@@ -18,6 +18,7 @@ import * as STM from "effect/STM"
 import * as GCounter from "./GCounter"
 import * as PNCounter from "./PNCounter"
 import * as GSet from "./GSet"
+import * as TwoPSet from "./TwoPSet"
 import { ReplicaId } from "./CRDT"
 
 describe("CRDT Laws", () => {
@@ -422,6 +423,270 @@ describe("CRDT Laws", () => {
         const result = await Effect.runPromise(program)
         expect(result).toBe(true)
       })
+    })
+  })
+
+  describe("2P-Set", () => {
+    describe("Chaining", () => {
+      it("should support fluent chaining with dual currying", async () => {
+        const program = Effect.gen(function* () {
+          const set = yield* TwoPSet.make<string>(ReplicaId("replica-1"))
+
+          // Chain add and remove operations in single transaction
+          yield* TwoPSet.add(set, "apple").pipe(
+            STM.flatMap(TwoPSet.add("banana")),
+            STM.flatMap(TwoPSet.add("cherry")),
+            STM.flatMap(TwoPSet.remove("banana"))
+          )
+
+          const size = yield* TwoPSet.size(set)
+          expect(size).toBe(2)
+
+          const values = yield* TwoPSet.values(set)
+          const sorted = [...values].sort()
+          expect(sorted).toEqual(["apple", "cherry"])
+
+          return size
+        })
+
+        const result = await Effect.runPromise(program)
+        expect(result).toBe(2)
+      })
+    })
+
+    describe("Commutativity", () => {
+      it("merge(a, b) = merge(b, a)", async () => FastCheck.assert(
+        FastCheck.asyncProperty(
+          FastCheck
+            .record({
+              replicaA: FastCheck.string().filter((s) => s.length > 0),
+              replicaB: FastCheck.string().filter((s) => s.length > 0),
+              itemsA: FastCheck.array(FastCheck.string(), { maxLength: 10 }),
+              itemsB: FastCheck.array(FastCheck.string(), { maxLength: 10 }),
+              removeA: FastCheck.array(FastCheck.string(), { maxLength: 5 }),
+              removeB: FastCheck.array(FastCheck.string(), { maxLength: 5 })
+            })
+            .filter(({ replicaA, replicaB }) => replicaA !== replicaB),
+          async ({ replicaA, replicaB, itemsA, itemsB, removeA, removeB }) => {
+            const program = Effect.gen(function* () {
+              const set1 = yield* TwoPSet.make<string>(ReplicaId(replicaA))
+              const set2 = yield* TwoPSet.make<string>(ReplicaId(replicaB))
+
+              // Add items to both sets
+              yield* Effect.forEach(itemsA, (item) => TwoPSet.add(set1, item))
+              yield* Effect.forEach(itemsB, (item) => TwoPSet.add(set2, item))
+
+              // Remove items from both sets
+              yield* Effect.forEach(removeA, (item) => TwoPSet.remove(set1, item))
+              yield* Effect.forEach(removeB, (item) => TwoPSet.remove(set2, item))
+
+              const stateA = yield* TwoPSet.query(set1)
+              const stateB = yield* TwoPSet.query(set2)
+
+              // Test merge(A, B)
+              const setAB = yield* TwoPSet.make<string>(ReplicaId("test-ab"))
+              yield* TwoPSet.merge(setAB, stateA)
+              yield* TwoPSet.merge(setAB, stateB)
+              const resultAB = yield* TwoPSet.values(setAB)
+
+              // Test merge(B, A)
+              const setBA = yield* TwoPSet.make<string>(ReplicaId("test-ba"))
+              yield* TwoPSet.merge(setBA, stateB)
+              yield* TwoPSet.merge(setBA, stateA)
+              const resultBA = yield* TwoPSet.values(setBA)
+
+              // Compare sets
+              if (resultAB.size !== resultBA.size) return false
+              for (const item of resultAB) {
+                if (!resultBA.has(item)) return false
+              }
+              return true
+            })
+
+            const result = await Effect.runPromise(program)
+            expect(result).toBe(true)
+          }
+        ),
+        { numRuns: 50 }
+      ))
+    })
+
+    describe("Associativity", () => {
+      it("merge(merge(a, b), c) = merge(a, merge(b, c))", async () => FastCheck.assert(
+        FastCheck.asyncProperty(
+          FastCheck
+            .record({
+              replicaA: FastCheck.string().filter((s) => s.length > 0),
+              replicaB: FastCheck.string().filter((s) => s.length > 0),
+              replicaC: FastCheck.string().filter((s) => s.length > 0),
+              itemsA: FastCheck.array(FastCheck.string(), { maxLength: 5 }),
+              itemsB: FastCheck.array(FastCheck.string(), { maxLength: 5 }),
+              itemsC: FastCheck.array(FastCheck.string(), { maxLength: 5 }),
+              removeA: FastCheck.array(FastCheck.string(), { maxLength: 3 }),
+              removeB: FastCheck.array(FastCheck.string(), { maxLength: 3 }),
+              removeC: FastCheck.array(FastCheck.string(), { maxLength: 3 })
+            })
+            .filter(
+              ({ replicaA, replicaB, replicaC }) =>
+                replicaA !== replicaB && replicaB !== replicaC && replicaA !== replicaC
+            ),
+          async ({ replicaA, replicaB, replicaC, itemsA, itemsB, itemsC, removeA, removeB, removeC }) => {
+            const program = Effect.gen(function* () {
+              const setA = yield* TwoPSet.make<string>(ReplicaId(replicaA))
+              const setB = yield* TwoPSet.make<string>(ReplicaId(replicaB))
+              const setC = yield* TwoPSet.make<string>(ReplicaId(replicaC))
+
+              // Add and remove items
+              yield* Effect.forEach(itemsA, (item) => TwoPSet.add(setA, item))
+              yield* Effect.forEach(itemsB, (item) => TwoPSet.add(setB, item))
+              yield* Effect.forEach(itemsC, (item) => TwoPSet.add(setC, item))
+
+              yield* Effect.forEach(removeA, (item) => TwoPSet.remove(setA, item))
+              yield* Effect.forEach(removeB, (item) => TwoPSet.remove(setB, item))
+              yield* Effect.forEach(removeC, (item) => TwoPSet.remove(setC, item))
+
+              const stateA = yield* TwoPSet.query(setA)
+              const stateB = yield* TwoPSet.query(setB)
+              const stateC = yield* TwoPSet.query(setC)
+
+              // Test merge(merge(a, b), c)
+              const setLeft = yield* TwoPSet.make<string>(ReplicaId("test-left"))
+              yield* TwoPSet.merge(setLeft, stateA)
+              yield* TwoPSet.merge(setLeft, stateB)
+              yield* TwoPSet.merge(setLeft, stateC)
+              const resultLeft = yield* TwoPSet.values(setLeft)
+
+              // Test merge(a, merge(b, c))
+              const setRight = yield* TwoPSet.make<string>(ReplicaId("test-right"))
+              yield* TwoPSet.merge(setRight, stateB)
+              yield* TwoPSet.merge(setRight, stateC)
+              yield* TwoPSet.merge(setRight, stateA)
+              const resultRight = yield* TwoPSet.values(setRight)
+
+              // Compare sets
+              if (resultLeft.size !== resultRight.size) return false
+              for (const item of resultLeft) {
+                if (!resultRight.has(item)) return false
+              }
+              return true
+            })
+
+            const result = await Effect.runPromise(program)
+            expect(result).toBe(true)
+          }
+        ),
+        { numRuns: 50 }
+      ))
+    })
+
+    describe("Idempotence", () => {
+      it("merge(a, a) = a", async () => FastCheck.assert(
+        FastCheck.asyncProperty(
+          FastCheck.record({
+            replica: FastCheck.string().filter((s) => s.length > 0),
+            items: FastCheck.array(FastCheck.string(), { maxLength: 10 }),
+            removes: FastCheck.array(FastCheck.string(), { maxLength: 5 })
+          }),
+          async ({ replica, items, removes }) => {
+            const program = Effect.gen(function* () {
+              const set = yield* TwoPSet.make<string>(ReplicaId(replica))
+
+              yield* Effect.forEach(items, (item) => TwoPSet.add(set, item))
+              yield* Effect.forEach(removes, (item) => TwoPSet.remove(set, item))
+
+              const sizeBefore = yield* TwoPSet.size(set)
+              const state = yield* TwoPSet.query(set)
+
+              // Merge with itself
+              yield* TwoPSet.merge(set, state)
+
+              const sizeAfter = yield* TwoPSet.size(set)
+
+              return sizeBefore === sizeAfter
+            })
+
+            const result = await Effect.runPromise(program)
+            expect(result).toBe(true)
+          }
+        ),
+        { numRuns: 50 }
+      ))
+    })
+
+    describe("Tombstone Property", () => {
+      it("once removed, element cannot be re-added", async () => FastCheck.assert(
+        FastCheck.asyncProperty(
+          FastCheck.record({
+            replica: FastCheck.string().filter((s) => s.length > 0),
+            item: FastCheck.string()
+          }),
+          async ({ replica, item }) => {
+            const program = Effect.gen(function* () {
+              const set = yield* TwoPSet.make<string>(ReplicaId(replica))
+
+              // Add element
+              yield* TwoPSet.add(set, item)
+              const hasAfterAdd = yield* TwoPSet.has(set, item)
+
+              // Remove element
+              yield* TwoPSet.remove(set, item)
+              const hasAfterRemove = yield* TwoPSet.has(set, item)
+
+              // Try to re-add
+              yield* TwoPSet.add(set, item)
+              const hasAfterReAdd = yield* TwoPSet.has(set, item)
+
+              return hasAfterAdd === true && hasAfterRemove === false && hasAfterReAdd === false
+            })
+
+            const result = await Effect.runPromise(program)
+            expect(result).toBe(true)
+          }
+        ),
+        { numRuns: 50 }
+      ))
+    })
+
+    describe("Remove Bias", () => {
+      it("concurrent add/remove converges to removed state", async () => FastCheck.assert(
+        FastCheck.asyncProperty(
+          FastCheck.record({
+            replicaA: FastCheck.string().filter((s) => s.length > 0),
+            replicaB: FastCheck.string().filter((s) => s.length > 0),
+            item: FastCheck.string()
+          }).filter(({ replicaA, replicaB }) => replicaA !== replicaB),
+          async ({ replicaA, replicaB, item }) => {
+            const program = Effect.gen(function* () {
+              const set1 = yield* TwoPSet.make<string>(ReplicaId(replicaA))
+              const set2 = yield* TwoPSet.make<string>(ReplicaId(replicaB))
+
+              // Both add the same element
+              yield* TwoPSet.add(set1, item)
+              yield* TwoPSet.add(set2, item)
+
+              // One removes it
+              yield* TwoPSet.remove(set2, item)
+
+              // Merge states
+              const state1 = yield* TwoPSet.query(set1)
+              const state2 = yield* TwoPSet.query(set2)
+
+              yield* TwoPSet.merge(set1, state2)
+              yield* TwoPSet.merge(set2, state1)
+
+              // Both should converge to removed state
+              const hasInSet1 = yield* TwoPSet.has(set1, item)
+              const hasInSet2 = yield* TwoPSet.has(set2, item)
+
+              return hasInSet1 === false && hasInSet2 === false
+            })
+
+            const result = await Effect.runPromise(program)
+            expect(result).toBe(true)
+          }
+        ),
+        { numRuns: 50 }
+      ))
     })
   })
 })

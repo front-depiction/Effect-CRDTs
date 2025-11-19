@@ -9,7 +9,6 @@
 import * as Effect from "effect/Effect"
 import * as Console from "effect/Console"
 import * as HttpClient from "@effect/platform/HttpClient"
-import * as HttpClientRequest from "@effect/platform/HttpClientRequest"
 import * as FetchHttpClient from "@effect/platform/FetchHttpClient"
 import { PNCounterState } from "../src/CRDTCounter.js"
 
@@ -32,11 +31,11 @@ const fetchReplicaState = (replicaId: string) =>
 
     const response = yield* client.get(`${serverUrl}/counter/${replicaId}`)
 
-    const json = yield* response.json
+    const json = (yield* response.json) as { state: PNCounterState }
 
     return {
       replicaId,
-      state: json.state as PNCounterState
+      state: json.state
     }
   })
 
