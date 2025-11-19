@@ -102,7 +102,7 @@ export declare namespace GCounter {
  */
 export class GCounterError extends Data.TaggedError("GCounterError")<{
   readonly message: string
-}> {}
+}> { }
 
 // =============================================================================
 // Type Guards
@@ -150,14 +150,14 @@ const ProtoGCounter = makeProtoBase(GCounterTypeId)
  * @since 0.1.0
  * @category constructors
  */
-export const make = (replicaId: ReplicaId): Effect.Effect<GCounter> =>
+export const make = (replicaId: ReplicaId): STM.STM<GCounter> =>
   STM.gen(function* () {
     const counts = yield* TMap.make<ReplicaId, number>([replicaId, 0])
-    const counter: Mutable<GCounter> = Object.create(ProtoGCounter)
+    const counter = Object.create(ProtoGCounter)
     counter.replicaId = replicaId
     counter.counts = counts
     return counter
-  }).pipe(STM.commit)
+  })
 
 /**
  * Creates a G-Counter from a persisted state.
@@ -185,14 +185,14 @@ export const make = (replicaId: ReplicaId): Effect.Effect<GCounter> =>
  * @since 0.1.0
  * @category constructors
  */
-export const fromState = (state: CounterState): Effect.Effect<GCounter> =>
+export const fromState = (state: CounterState): STM.STM<Mutable<GCounter>> =>
   STM.gen(function* () {
     const counts = yield* TMap.fromIterable(state.counts.entries())
     const counter: Mutable<GCounter> = Object.create(ProtoGCounter)
     counter.replicaId = state.replicaId
     counter.counts = counts
     return counter
-  }).pipe(STM.commit)
+  })
 
 // =============================================================================
 // Operations
@@ -225,11 +225,11 @@ export const fromState = (state: CounterState): Effect.Effect<GCounter> =>
  * @category operations
  */
 export const increment: {
-  (value?: number): (self: GCounter) => STM.STM<void>
-  (self: GCounter, value?: number): STM.STM<void>
+  (value: number): (self: GCounter) => STM.STM<GCounter>
+  (self: GCounter, value: number): STM.STM<GCounter>
 } = dual(
-  (args) => isGCounter(args[0]),
-  (self: GCounter, value = 1): STM.STM<void> => {
+  2,
+  (self: GCounter, value = 1): STM.STM<GCounter> => {
     if (value < 0) {
       return STM.die(new GCounterError({ message: "Cannot increment by negative value" }))
     }
@@ -238,7 +238,8 @@ export const increment: {
       STM.flatMap((currentOpt) => {
         const current = Option.getOrElse(currentOpt, () => 0)
         return TMap.set(self.counts, self.replicaId, current + value)
-      })
+      }),
+      STM.as(self)
     )
   }
 )
@@ -278,11 +279,11 @@ export const increment: {
  * @category operations
  */
 export const merge: {
-  (other: CounterState): (self: GCounter) => STM.STM<void>
-  (self: GCounter, other: CounterState): STM.STM<void>
+  (other: CounterState): (self: GCounter) => STM.STM<GCounter>
+  (self: GCounter, other: CounterState): STM.STM<GCounter>
 } = dual(
   2,
-  (self: GCounter, other: CounterState): STM.STM<void> =>
+  (self: GCounter, other: CounterState): STM.STM<GCounter> =>
     STM.forEach(other.counts.entries(), ([replicaId, count]) =>
       pipe(
         TMap.get(self.counts, replicaId),
@@ -291,7 +292,7 @@ export const merge: {
           return TMap.set(self.counts, replicaId, Math.max(current, count))
         })
       )
-    ).pipe(STM.asVoid)
+    ).pipe(STM.as(self))
 )
 
 // =============================================================================

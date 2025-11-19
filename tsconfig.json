@@ -32,5 +32,17 @@
     "node_modules",
     "dist",
     ".context",
+  ],
+  "plugins": [
+    {
+      "name": "@effect/language-service",
+      "namespaceImportPackages": [
+        "effect",
+        "@effect/*"
+      ],
+      "diagnosticSeverity": {
+        "importFromBarrel": "error"
+      }
+    }
   ]
 }

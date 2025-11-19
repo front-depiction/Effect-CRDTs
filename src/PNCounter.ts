@@ -222,11 +222,11 @@ export const fromState = (state: PNCounterState): STM.STM<PNCounter> =>
  * @category operations
  */
 export const increment: {
-  (value?: number): (self: PNCounter) => STM.STM<void>
-  (self: PNCounter, value?: number): STM.STM<void>
+  (value?: number): (self: PNCounter) => STM.STM<PNCounter>
+  (self: PNCounter, value?: number): STM.STM<PNCounter>
 } = dual(
   (args) => isPNCounter(args[0]),
-  (self: PNCounter, value = 1): STM.STM<void> => {
+  (self: PNCounter, value = 1): STM.STM<PNCounter> => {
     if (value < 0) {
       return STM.die(new PNCounterError({ message: "Cannot increment by negative value" }))
     }
@@ -235,7 +235,8 @@ export const increment: {
       STM.flatMap((currentOpt) => {
         const current = Option.getOrElse(currentOpt, () => 0)
         return TMap.set(self.counts, self.replicaId, current + value)
-      })
+      }),
+      STM.as(self)
     )
   }
 )
@@ -268,11 +269,11 @@ export const increment: {
  * @category operations
  */
 export const decrement: {
-  (value?: number): (self: PNCounter) => STM.STM<void>
-  (self: PNCounter, value?: number): STM.STM<void>
+  (value?: number): (self: PNCounter) => STM.STM<PNCounter>
+  (self: PNCounter, value?: number): STM.STM<PNCounter>
 } = dual(
   (args) => isPNCounter(args[0]),
-  (self: PNCounter, value = 1): STM.STM<void> => {
+  (self: PNCounter, value = 1): STM.STM<PNCounter> => {
     if (value < 0) {
       return STM.die(new PNCounterError({ message: "Cannot decrement by negative value" }))
     }
@@ -281,7 +282,8 @@ export const decrement: {
       STM.flatMap((currentOpt) => {
         const current = Option.getOrElse(currentOpt, () => 0)
         return TMap.set(self.decrements, self.replicaId, current + value)
-      })
+      }),
+      STM.as(self)
     )
   }
 )
@@ -318,11 +320,11 @@ export const decrement: {
  * @category operations
  */
 export const merge: {
-  (other: PNCounterState): (self: PNCounter) => STM.STM<void>
-  (self: PNCounter, other: PNCounterState): STM.STM<void>
+  (other: PNCounterState): (self: PNCounter) => STM.STM<PNCounter>
+  (self: PNCounter, other: PNCounterState): STM.STM<PNCounter>
 } = dual(
   2,
-  (self: PNCounter, other: PNCounterState): STM.STM<void> =>
+  (self: PNCounter, other: PNCounterState): STM.STM<PNCounter> =>
     STM.gen(function* () {
       // Merge counts
       yield* STM.forEach(other.counts.entries(), ([replicaId, count]) =>
@@ -344,6 +346,7 @@ export const merge: {
           })
         )
       )
+      return self
     })
 )
 
@@ -518,7 +521,6 @@ export const withPersistence = (
       yield* Effect.addFinalizer(() =>
         pipe(
           query(counter),
-          STM.commit,
           Effect.flatMap((state) => persistence.save(replicaId, state)),
           Effect.ignoreLogged
         )

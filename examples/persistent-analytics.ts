@@ -55,7 +55,7 @@ const displayMetrics = (metrics: Metrics, label: string) =>
 // Main program
 const program = Effect.gen(function* () {
   yield* Console.log("📈 Persistent Analytics Dashboard Demo")
-  yield* Console.log("=" .repeat(60))
+  yield* Console.log("=".repeat(60))
   yield* Console.log("")
 
   // Server 1: us-east

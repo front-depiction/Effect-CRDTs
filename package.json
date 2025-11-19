@@ -21,6 +21,7 @@
     "example:counter": "bun examples/collaborative-counter.ts",
     "example:cart": "bun examples/distributed-shopping-cart.ts",
     "example:analytics": "bun examples/persistent-analytics.ts",
+    "example:party": "bun examples/distributed-party-game.ts",
     "examples": "bun run example:counter && echo '' && bun run example:cart && echo '' && bun run example:analytics",
     "server": "bun examples/server.ts",
     "client": "bun examples/client.ts",
@@ -38,6 +39,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@effect/language-service": "^0.56.0",
     "@effect/platform": "^0.93.3",
     "@effect/platform-bun": "^0.83.0",
     "effect": "^3.18.0"

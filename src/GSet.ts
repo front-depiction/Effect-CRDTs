@@ -217,12 +217,12 @@ export const fromState = <A>(state: GSetState<A>): STM.STM<GSet<A>> =>
  * @category operations
  */
 export const add: {
-  <A>(value: A): (self: GSet<A>) => STM.STM<void>
-  <A>(self: GSet<A>, value: A): STM.STM<void>
+  <A>(value: A): (self: GSet<A>) => STM.STM<GSet<A>>
+  <A>(self: GSet<A>, value: A): STM.STM<GSet<A>>
 } = dual(
   2,
-  <A>(self: GSet<A>, value: A): STM.STM<void> =>
-    TSet.add(self.added, value)
+  <A>(self: GSet<A>, value: A): STM.STM<GSet<A>> =>
+    TSet.add(self.added, value).pipe(STM.as(self))
 )
 
 /**
@@ -255,12 +255,12 @@ export const add: {
  * @category operations
  */
 export const merge: {
-  <A>(other: GSetState<A>): (self: GSet<A>) => STM.STM<void>
-  <A>(self: GSet<A>, other: GSetState<A>): STM.STM<void>
+  <A>(other: GSetState<A>): (self: GSet<A>) => STM.STM<GSet<A>>
+  <A>(self: GSet<A>, other: GSetState<A>): STM.STM<GSet<A>>
 } = dual(
   2,
-  <A>(self: GSet<A>, other: GSetState<A>): STM.STM<void> =>
-    STM.forEach(other.added, (value) => TSet.add(self.added, value))
+  <A>(self: GSet<A>, other: GSetState<A>): STM.STM<GSet<A>> =>
+    STM.forEach(other.added, (value) => TSet.add(self.added, value)).pipe(STM.as(self))
 )
 
 // =============================================================================

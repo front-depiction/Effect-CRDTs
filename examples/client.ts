@@ -21,6 +21,7 @@ import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import * as PNCounter from "../src/PNCounter.js"
 import * as Persistence from "../src/Persistence.js"
 import { ReplicaId } from "../src/CRDT.js"
+import { BunContext } from "@effect/platform-bun"
 
 // Get config from command line args
 const getConfig = () => {
@@ -131,12 +132,11 @@ const program = Effect.gen(function* () {
 // Run with all layers provided
 const { replicaName, dataDir } = getConfig()
 
-// Build layer stack
-const fileSystemLayers = Layer.mergeAll(BunFileSystem.layer, BunPath.layer)
+
 
 const persistenceLayer = Persistence.layer.pipe(
   Layer.provide(KeyValueStore.layerFileSystem(dataDir)),
-  Layer.provide(fileSystemLayers)
+  Layer.provide(BunContext.layer),
 )
 
 const counterLayer = PNCounter.withPersistence(ReplicaId(replicaName)).pipe(

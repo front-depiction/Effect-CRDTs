@@ -40,25 +40,25 @@ describe("CRDT Laws", () => {
               const counter2 = yield* GCounter.make(ReplicaId(replicaB))
 
               // Increment both counters
-              yield* STM.commit(GCounter.increment(counter1, valueA))
-              yield* STM.commit(GCounter.increment(counter2, valueB))
+              yield* GCounter.increment(counter1, valueA)
+              yield* GCounter.increment(counter2, valueB)
 
               // Get states
-              const stateA = yield* STM.commit(GCounter.query(counter1))
-              const stateB = yield* STM.commit(GCounter.query(counter2))
+              const stateA = yield* GCounter.query(counter1)
+              const stateB = yield* GCounter.query(counter2)
 
               // Test merge(A, B)
               const counterAB1 = yield* GCounter.make(ReplicaId("test-ab1"))
               const counterAB2 = yield* GCounter.make(ReplicaId("test-ab2"))
 
-              yield* STM.commit(GCounter.merge(counterAB1, stateA))
-              yield* STM.commit(GCounter.merge(counterAB1, stateB))
-              const resultAB = yield* STM.commit(GCounter.value(counterAB1))
+              yield* GCounter.merge(counterAB1, stateA)
+              yield* GCounter.merge(counterAB1, stateB)
+              const resultAB = yield* GCounter.value(counterAB1)
 
               // Test merge(B, A)
-              yield* STM.commit(GCounter.merge(counterAB2, stateB))
-              yield* STM.commit(GCounter.merge(counterAB2, stateA))
-              const resultBA = yield* STM.commit(GCounter.value(counterAB2))
+              yield* GCounter.merge(counterAB2, stateB)
+              yield* GCounter.merge(counterAB2, stateA)
+              const resultBA = yield* GCounter.value(counterAB2)
 
               return resultAB === resultBA && resultAB === valueA + valueB
             })
@@ -94,27 +94,27 @@ describe("CRDT Laws", () => {
               const counterB = yield* GCounter.make(ReplicaId(replicaB))
               const counterC = yield* GCounter.make(ReplicaId(replicaC))
 
-              yield* STM.commit(GCounter.increment(counterA, valueA))
-              yield* STM.commit(GCounter.increment(counterB, valueB))
-              yield* STM.commit(GCounter.increment(counterC, valueC))
+              yield* GCounter.increment(counterA, valueA)
+              yield* GCounter.increment(counterB, valueB)
+              yield* GCounter.increment(counterC, valueC)
 
-              const stateA = yield* STM.commit(GCounter.query(counterA))
-              const stateB = yield* STM.commit(GCounter.query(counterB))
-              const stateC = yield* STM.commit(GCounter.query(counterC))
+              const stateA = yield* GCounter.query(counterA)
+              const stateB = yield* GCounter.query(counterB)
+              const stateC = yield* GCounter.query(counterC)
 
               // Test merge(merge(a, b), c)
               const counterLeft = yield* GCounter.make(ReplicaId("test-left"))
-              yield* STM.commit(GCounter.merge(counterLeft, stateA))
-              yield* STM.commit(GCounter.merge(counterLeft, stateB))
-              yield* STM.commit(GCounter.merge(counterLeft, stateC))
-              const resultLeft = yield* STM.commit(GCounter.value(counterLeft))
+              yield* GCounter.merge(counterLeft, stateA)
+              yield* GCounter.merge(counterLeft, stateB)
+              yield* GCounter.merge(counterLeft, stateC)
+              const resultLeft = yield* GCounter.value(counterLeft)
 
               // Test merge(a, merge(b, c))
               const counterRight = yield* GCounter.make(ReplicaId("test-right"))
-              yield* STM.commit(GCounter.merge(counterRight, stateB))
-              yield* STM.commit(GCounter.merge(counterRight, stateC))
-              yield* STM.commit(GCounter.merge(counterRight, stateA))
-              const resultRight = yield* STM.commit(GCounter.value(counterRight))
+              yield* GCounter.merge(counterRight, stateB)
+              yield* GCounter.merge(counterRight, stateC)
+              yield* GCounter.merge(counterRight, stateA)
+              const resultRight = yield* GCounter.value(counterRight)
 
               return resultLeft === resultRight && resultLeft === valueA + valueB + valueC
             })
@@ -137,15 +137,15 @@ describe("CRDT Laws", () => {
           async ({ replica, value }) => {
             const program = Effect.gen(function* () {
               const counter = yield* GCounter.make(ReplicaId(replica))
-              yield* STM.commit(GCounter.increment(counter, value))
+              yield* GCounter.increment(counter, value)
 
-              const valueBefore = yield* STM.commit(GCounter.value(counter))
-              const state = yield* STM.commit(GCounter.query(counter))
+              const valueBefore = yield* GCounter.value(counter)
+              const state = yield* GCounter.query(counter)
 
               // Merge with itself
-              yield* STM.commit(GCounter.merge(counter, state))
+              yield* GCounter.merge(counter, state)
 
-              const valueAfter = yield* STM.commit(GCounter.value(counter))
+              const valueAfter = yield* GCounter.value(counter)
 
               return valueBefore === valueAfter && valueBefore === value
             })
@@ -167,8 +167,8 @@ describe("CRDT Laws", () => {
           const values = yield* Effect.forEach(
             Array.makeBy(10, (i) => i + 1),
             (increment) => Effect.gen(function* () {
-              yield* STM.commit(GCounter.increment(counter, increment))
-              return yield* STM.commit(GCounter.value(counter))
+              yield* GCounter.increment(counter, increment)
+              return yield* GCounter.value(counter)
             })
           )
 
@@ -183,6 +183,29 @@ describe("CRDT Laws", () => {
   })
 
   describe("PN-Counter", () => {
+    describe("Chaining", () => {
+      it("should support fluent chaining with dual currying", async () => {
+        const program = Effect.gen(function* () {
+          const counter = yield* PNCounter.make(ReplicaId("replica-1"))
+
+          // Chain increment and decrement operations in single transaction
+          yield* PNCounter.increment(counter, 10).pipe(
+            STM.flatMap(PNCounter.decrement(3)),   // Curried!
+            STM.flatMap(PNCounter.increment(5)),
+            STM.flatMap(PNCounter.decrement(2))
+          )
+
+          const value = yield* PNCounter.value(counter)
+          expect(value).toBe(10)  // 10 - 3 + 5 - 2 = 10
+
+          return value
+        })
+
+        const result = await Effect.runPromise(program)
+        expect(result).toBe(10)
+      })
+    })
+
     describe("Commutativity", () => {
       it("merge(a, b) = merge(b, a) with increments and decrements", async () => FastCheck.assert(
         FastCheck.asyncProperty(
@@ -201,25 +224,25 @@ describe("CRDT Laws", () => {
               const counter1 = yield* PNCounter.make(ReplicaId(replicaA))
               const counter2 = yield* PNCounter.make(ReplicaId(replicaB))
 
-              yield* STM.commit(PNCounter.increment(counter1, incA))
-              yield* STM.commit(PNCounter.decrement(counter1, decA))
-              yield* STM.commit(PNCounter.increment(counter2, incB))
-              yield* STM.commit(PNCounter.decrement(counter2, decB))
+              yield* PNCounter.increment(counter1, incA)
+              yield* PNCounter.decrement(counter1, decA)
+              yield* PNCounter.increment(counter2, incB)
+              yield* PNCounter.decrement(counter2, decB)
 
-              const stateA = yield* STM.commit(PNCounter.query(counter1))
-              const stateB = yield* STM.commit(PNCounter.query(counter2))
+              const stateA = yield* PNCounter.query(counter1)
+              const stateB = yield* PNCounter.query(counter2)
 
               // Test merge(A, B)
               const counterAB = yield* PNCounter.make(ReplicaId("test-ab"))
-              yield* STM.commit(PNCounter.merge(counterAB, stateA))
-              yield* STM.commit(PNCounter.merge(counterAB, stateB))
-              const resultAB = yield* STM.commit(PNCounter.value(counterAB))
+              yield* PNCounter.merge(counterAB, stateA)
+              yield* PNCounter.merge(counterAB, stateB)
+              const resultAB = yield* PNCounter.value(counterAB)
 
               // Test merge(B, A)
               const counterBA = yield* PNCounter.make(ReplicaId("test-ba"))
-              yield* STM.commit(PNCounter.merge(counterBA, stateB))
-              yield* STM.commit(PNCounter.merge(counterBA, stateA))
-              const resultBA = yield* STM.commit(PNCounter.value(counterBA))
+              yield* PNCounter.merge(counterBA, stateB)
+              yield* PNCounter.merge(counterBA, stateA)
+              const resultBA = yield* PNCounter.value(counterBA)
 
               const expected = incA - decA + incB - decB
               return resultAB === resultBA && resultAB === expected
@@ -245,16 +268,16 @@ describe("CRDT Laws", () => {
           async ({ replica, inc, dec }) => {
             const program = Effect.gen(function* () {
               const counter = yield* PNCounter.make(ReplicaId(replica))
-              yield* STM.commit(PNCounter.increment(counter, inc))
-              yield* STM.commit(PNCounter.decrement(counter, dec))
+              yield* PNCounter.increment(counter, inc)
+              yield* PNCounter.decrement(counter, dec)
 
-              const valueBefore = yield* STM.commit(PNCounter.value(counter))
-              const state = yield* STM.commit(PNCounter.query(counter))
+              const valueBefore = yield* PNCounter.value(counter)
+              const state = yield* PNCounter.query(counter)
 
               // Merge with itself
-              yield* STM.commit(PNCounter.merge(counter, state))
+              yield* PNCounter.merge(counter, state)
 
-              const valueAfter = yield* STM.commit(PNCounter.value(counter))
+              const valueAfter = yield* PNCounter.value(counter)
 
               return valueBefore === valueAfter && valueBefore === inc - dec
             })
@@ -269,6 +292,33 @@ describe("CRDT Laws", () => {
   })
 
   describe("G-Set", () => {
+    describe("Chaining", () => {
+      it("should support fluent chaining with dual currying", async () => {
+        const program = Effect.gen(function* () {
+          const set = yield* GSet.make<string>(ReplicaId("replica-1"))
+
+          // Chain add operations in single transaction
+          yield* GSet.add(set, "apple").pipe(
+            STM.flatMap(GSet.add("banana")),    // Curried!
+            STM.flatMap(GSet.add("cherry")),
+            STM.flatMap(GSet.add("apple"))      // Duplicate, idempotent
+          )
+
+          const size = yield* GSet.size(set)
+          expect(size).toBe(3)
+
+          const values = yield* GSet.values(set)
+          const sorted = [...values].sort()
+          expect(sorted).toEqual(["apple", "banana", "cherry"])
+
+          return size
+        })
+
+        const result = await Effect.runPromise(program)
+        expect(result).toBe(3)
+      })
+    })
+
     describe("Commutativity", () => {
       it("merge(a, b) = merge(b, a)", async () => FastCheck.assert(
         FastCheck.asyncProperty(
@@ -286,23 +336,23 @@ describe("CRDT Laws", () => {
               const set2 = yield* GSet.make<string>(ReplicaId(replicaB))
 
               // Add items to both sets
-              yield* Effect.forEach(itemsA, (item) => STM.commit(GSet.add(set1, item)))
-              yield* Effect.forEach(itemsB, (item) => STM.commit(GSet.add(set2, item)))
+              yield* Effect.forEach(itemsA, (item) => GSet.add(set1, item))
+              yield* Effect.forEach(itemsB, (item) => GSet.add(set2, item))
 
-              const stateA = yield* STM.commit(GSet.query(set1))
-              const stateB = yield* STM.commit(GSet.query(set2))
+              const stateA = yield* GSet.query(set1)
+              const stateB = yield* GSet.query(set2)
 
               // Test merge(A, B)
               const setAB = yield* GSet.make<string>(ReplicaId("test-ab"))
-              yield* STM.commit(GSet.merge(setAB, stateA))
-              yield* STM.commit(GSet.merge(setAB, stateB))
-              const resultAB = yield* STM.commit(GSet.values(setAB))
+              yield* GSet.merge(setAB, stateA)
+              yield* GSet.merge(setAB, stateB)
+              const resultAB = yield* GSet.values(setAB)
 
               // Test merge(B, A)
               const setBA = yield* GSet.make<string>(ReplicaId("test-ba"))
-              yield* STM.commit(GSet.merge(setBA, stateB))
-              yield* STM.commit(GSet.merge(setBA, stateA))
-              const resultBA = yield* STM.commit(GSet.values(setBA))
+              yield* GSet.merge(setBA, stateB)
+              yield* GSet.merge(setBA, stateA)
+              const resultBA = yield* GSet.values(setBA)
 
               // Compare sets
               if (resultAB.size !== resultBA.size) return false
@@ -331,15 +381,15 @@ describe("CRDT Laws", () => {
             const program = Effect.gen(function* () {
               const set = yield* GSet.make<string>(ReplicaId(replica))
 
-              yield* Effect.forEach(items, (item) => STM.commit(GSet.add(set, item)))
+              yield* Effect.forEach(items, (item) => GSet.add(set, item))
 
-              const sizeBefore = yield* STM.commit(GSet.size(set))
-              const state = yield* STM.commit(GSet.query(set))
+              const sizeBefore = yield* GSet.size(set)
+              const state = yield* GSet.query(set)
 
               // Merge with itself
-              yield* STM.commit(GSet.merge(set, state))
+              yield* GSet.merge(set, state)
 
-              const sizeAfter = yield* STM.commit(GSet.size(set))
+              const sizeAfter = yield* GSet.size(set)
 
               return sizeBefore === sizeAfter
             })
@@ -360,8 +410,8 @@ describe("CRDT Laws", () => {
           const sizes = yield* Effect.forEach(
             Array.makeBy(10, (i) => i),
             (i) => Effect.gen(function* () {
-              yield* STM.commit(GSet.add(set, `item-${i}`))
-              return yield* STM.commit(GSet.size(set))
+              yield* GSet.add(set, `item-${i}`)
+              return yield* GSet.size(set)
             })
           )
 

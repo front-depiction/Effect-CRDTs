@@ -52,12 +52,12 @@ import { GCounter, ReplicaId } from "effect-crdts"
 const program = Effect.gen(function* () {
   const counter = yield* GCounter.Tag
 
-  // Increment the counter
-  yield* STM.commit(GCounter.increment(counter, 5))
-  yield* STM.commit(GCounter.increment(counter, 3))
+  // Increment the counter (STM operations auto-commit when yielded in Effect.gen)
+  yield* GCounter.increment(counter, 5)
+  yield* GCounter.increment(counter, 3)
 
   // Get the current value
-  const value = yield* STM.commit(GCounter.value(counter))
+  const value = yield* GCounter.value(counter)
   console.log("Counter value:", value) // 8
 })
 
@@ -80,15 +80,15 @@ const program = Effect.gen(function* () {
   const replica2 = yield* GCounter.make(ReplicaId("replica-2"))
 
   // Each replica increments independently
-  yield* STM.commit(GCounter.increment(replica1, 10))
-  yield* STM.commit(GCounter.increment(replica2, 20))
+  yield* GCounter.increment(replica1, 10)
+  yield* GCounter.increment(replica2, 20)
 
   // Synchronize replicas by merging state
-  const state2 = yield* STM.commit(GCounter.query(replica2))
-  yield* STM.commit(GCounter.merge(replica1, state2))
+  const state2 = yield* GCounter.query(replica2)
+  yield* GCounter.merge(replica1, state2)
 
   // Both replicas now converge to the same value
-  const value = yield* STM.commit(GCounter.value(replica1))
+  const value = yield* GCounter.value(replica1)
   console.log("Converged value:", value) // 30
 })
 
@@ -103,18 +103,18 @@ import * as STM from "effect/STM"
 import { PNCounter, ReplicaId } from "effect-crdts"
 
 const program = Effect.gen(function* () {
-  const counter = yield* PNCounter.PNCounter
+  const counter = yield* PNCounter.Tag
 
-  yield* STM.commit(counter.increment(10))
-  yield* STM.commit(counter.decrement(3))
-  yield* STM.commit(counter.increment(5))
+  yield* PNCounter.increment(counter, 10)
+  yield* PNCounter.decrement(counter, 3)
+  yield* PNCounter.increment(counter, 5)
 
-  const value = yield* STM.commit(counter.value)
+  const value = yield* PNCounter.value(counter)
   console.log("Final value:", value) // 12
 })
 
 Effect.runPromise(
-  program.pipe(Effect.provide(PNCounter.PNCounter.Live(ReplicaId("replica-1"))))
+  program.pipe(Effect.provide(PNCounter.Live(ReplicaId("replica-1"))))
 )
 ```
 
@@ -126,25 +126,23 @@ import * as STM from "effect/STM"
 import { GSet, ReplicaId } from "effect-crdts"
 
 const program = Effect.gen(function* () {
-  const set = yield* GSet.GSet<string>()
+  const set = yield* GSet.make<string>(ReplicaId("replica-1"))
 
   // Add elements to the set
-  yield* STM.commit(set.add("apple"))
-  yield* STM.commit(set.add("banana"))
-  yield* STM.commit(set.add("apple")) // Duplicate, idempotent
+  yield* GSet.add(set, "apple")
+  yield* GSet.add(set, "banana")
+  yield* GSet.add(set, "apple") // Duplicate, idempotent
 
   // Check membership
-  const hasApple = yield* STM.commit(set.has("apple"))
+  const hasApple = yield* GSet.has(set, "apple")
   console.log("Has apple:", hasApple) // true
 
   // Get all values
-  const values = yield* STM.commit(set.values)
+  const values = yield* GSet.values(set)
   console.log("Values:", Array.from(values)) // ["apple", "banana"]
 })
 
-Effect.runPromise(
-  program.pipe(Effect.provide(GSet.GSet.Live(ReplicaId("replica-1"))))
-)
+Effect.runPromise(program)
 ```
 
 ## CRDT Laws
@@ -179,21 +177,58 @@ All CRDT operations return `STM.STM<T>`, making them:
 - **Atomic**: Operations either complete fully or not at all
 - **Composable**: Can be combined with other STM operations
 - **Retryable**: Automatic retry on conflicts
+- **Auto-commit**: When yielded in `Effect.gen`, STM operations automatically commit
+
+#### Basic Usage (Auto-commit)
 
 ```typescript
-// Composing STM operations
-const program = STM.gen(function* () {
-  const counter = yield* GCounter.Tag
-  const set = yield* GSet.GSet<string>()
+// STM operations auto-commit when yielded in Effect.gen
+const program = Effect.gen(function* () {
+  const counter = yield* GCounter.make(ReplicaId("replica-1"))
 
-  // Atomic transaction combining both CRDTs
+  // Each yield auto-commits (3 separate transactions)
   yield* GCounter.increment(counter, 1)
-  yield* set.add("item")
+  yield* GCounter.increment(counter, 2)
+  yield* GCounter.increment(counter, 3)
 
-  return {
-    counterValue: yield* GCounter.value(counter),
-    setSize: yield* set.size
-  }
+  return yield* GCounter.value(counter) // 6
+})
+```
+
+#### Batched Operations (Single Transaction)
+
+```typescript
+// Use dual's curried form for elegant chaining
+const program = Effect.gen(function* () {
+  const counter = yield* GCounter.make(ReplicaId("replica-1"))
+
+  // All operations in a single transaction using STM.flatMap
+  yield* GCounter.increment(counter, 1).pipe(
+    STM.flatMap(GCounter.increment(2)),  // Curried! No lambda needed
+    STM.flatMap(GCounter.increment(3))
+  )
+
+  return yield* GCounter.value(counter) // 6
+})
+```
+
+#### Composing Multiple CRDTs
+
+```typescript
+// Multiple CRDTs in a single atomic transaction
+const program = Effect.gen(function* () {
+  const counter = yield* GCounter.make(ReplicaId("r1"))
+  const set = yield* GSet.make<string>(ReplicaId("r1"))
+
+  // Single atomic transaction
+  yield* STM.gen(function* () {
+    yield* GCounter.increment(counter, 1)
+    yield* GSet.add(set, "item")
+    return {
+      counterValue: yield* GCounter.value(counter),
+      setSize: yield* GSet.size(set)
+    }
+  })
 })
 ```
 
@@ -238,11 +273,11 @@ Each CRDT is exposed as an Effect Context service:
 
 ```typescript
 // Using layers
-const layer = GCounter.GCounter.Live(ReplicaId("replica-1"))
+const layer = GCounter.Live(ReplicaId("replica-1"))
 
 // Accessing in Effect programs
 const program = Effect.gen(function* () {
-  const counter = yield* GCounter.GCounter
+  const counter = yield* GCounter.Tag
   // ... use counter
 })
 
