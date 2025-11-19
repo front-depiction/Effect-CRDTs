@@ -28,7 +28,7 @@ import * as STM from "effect/STM"
 import * as TSet from "effect/TSet"
 import type { Mutable } from "effect/Types"
 import * as Types from "effect/Types"
-import { type ReplicaId } from "./CRDT.js"
+import { ReplicaIdSchema, type ReplicaId } from "./CRDT.js"
 import type { MVRegisterState } from "./CRDTRegister.js"
 import { makeProtoBase } from "./internal/proto.js"
 import * as Persistence from "./Persistence.js"
@@ -223,16 +223,18 @@ const isDominated = (
   STM.gen(function* () {
     const entryClock = yield* VectorClock.query(entry.clock)
 
-    // Get all other entries (excluding self)
-    const others = allEntries.filter((other) => other !== entry)
-
     // Query all clocks in one go to avoid STM retry issues with imperative loops
-    const otherClocks = yield* STM.forEach(others, (other) =>
+    const otherClocksWithEntry = yield* STM.forEach(allEntries, (other) =>
       pipe(
         VectorClock.query(other.clock),
-        STM.map((clock) => clock)
+        STM.map((clock) => ({ clock, other }))
       )
     )
+
+    // Filter out self by comparing vector clock equality (not object reference)
+    const otherClocks = otherClocksWithEntry
+      .filter(({ clock }) => !VectorClock.equal(entryClock, clock))
+      .map(({ clock }) => clock)
 
     // Check if any other clock dominates this entry's clock
     // Entry is dominated if entryClock happened before any otherClock
@@ -320,8 +322,11 @@ export const set: {
       // Increment for this replica
       yield* VectorClock.increment(newClock)
 
-      // Add new value
-      yield* TSet.add(self.values, { value, clock: newClock })
+      // Add new value with a fresh VectorClock created from the state
+      // (not sharing the mutable newClock object)
+      const newClockState = yield* VectorClock.query(newClock)
+      const freshClock = yield* VectorClock.fromState(newClockState)
+      yield* TSet.add(self.values, { value, clock: freshClock })
 
       // Prune dominated values
       yield* pruneDominated(self)
@@ -588,23 +593,23 @@ export const withPersistence = <A, I, R>(
 ) => {
   const vectorClockStateSchema = Schema.Struct({
     type: Schema.Literal("VectorClock"),
-    replicaId: Schema.String as unknown as Schema.Schema<ReplicaId, ReplicaId, never>,
+    replicaId: ReplicaIdSchema,
     counters: Schema.ReadonlyMap({
-      key: Schema.String as unknown as Schema.Schema<ReplicaId, ReplicaId, never>,
+      key: ReplicaIdSchema,
       value: Schema.Number
     })
   })
 
-  const stateSchema: Schema.Schema<MVRegisterState<A>, MVRegisterState<A>, R> = Schema.Struct({
+  const stateSchema = Schema.Struct({
     type: Schema.Literal("MVRegister"),
-    replicaId: Schema.String as unknown as Schema.Schema<ReplicaId, ReplicaId, never>,
+    replicaId: ReplicaIdSchema,
     values: Schema.Array(
       Schema.Struct({
         value: valueSchema,
         clock: vectorClockStateSchema
       })
     )
-  }) as any
+  })
 
   return Layer.scoped(
     Tag<A>(),
